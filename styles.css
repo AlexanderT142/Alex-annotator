@@ -42,6 +42,66 @@
   white-space: nowrap;
 }
 
+/* The "pen": a STYLE row + a COLOR row (two small additive axes, no grid). */
+.lpa-pen {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lpa-styles {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+.lpa-style-btn {
+  width: 24px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: var(--background-secondary);
+}
+.lpa-style-btn:hover {
+  background: var(--background-modifier-hover);
+}
+.lpa-style-btn.is-active {
+  border-color: var(--interactive-accent);
+  background: var(--background-primary);
+}
+.lpa-style-sample {
+  position: relative;
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-normal);
+  padding-bottom: 2px;
+}
+.lpa-style-sample--highlight {
+  background: var(--lpa-fill, rgba(232, 194, 76, 0.45));
+  border-radius: 2px;
+  padding: 0 1px 2px;
+}
+.lpa-style-sample--underline { border-bottom: 2px solid var(--lpa-ink, currentColor); }
+.lpa-style-sample--dashed { border-bottom: 2px dashed var(--lpa-ink, currentColor); }
+.lpa-style-sample--dotted { border-bottom: 2px dotted var(--lpa-ink, currentColor); }
+.lpa-style-sample--strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--lpa-ink, currentColor);
+  text-decoration-thickness: 2px;
+}
+.lpa-style-sample--box {
+  border: 1.5px solid var(--lpa-ink, currentColor);
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+.lpa-style-sample--comment {
+  border-bottom: 2px dotted color-mix(in srgb, var(--lpa-ink, currentColor) 55%, transparent);
+}
+
 .lpa-swatches {
   display: flex;
   gap: 4px;
@@ -147,6 +207,88 @@
     outline-color: var(--interactive-accent);
     box-shadow: 0 0 0 3px var(--interactive-accent);
   }
+}
+
+/* ===== Decorative (non-fill) mark styles ===================================
+   The element spans the line's text box; the stroke is drawn by ::after at a
+   consistent offset, with weight + dash geometry passed in as CSS vars so they
+   stay consistent and scale with zoom. */
+.lpa-highlight.lpa-mark {
+  background: transparent;
+  border-radius: 2px;
+  box-sizing: border-box;
+  outline: none;
+}
+.lpa-mark--underline::after,
+.lpa-mark--dashed::after,
+.lpa-mark--dotted::after,
+.lpa-mark--comment::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px; /* below descenders → never collides with g/y/p */
+  height: var(--lpa-w, 2px);
+  background: var(--lpa-deco, var(--lpa-ink, currentColor));
+  border-radius: var(--lpa-w, 2px);
+}
+.lpa-mark--strike::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 56%; /* through the x-height, not the descenders */
+  height: var(--lpa-w, 2px);
+  transform: translateY(-50%);
+  background: var(--lpa-deco, var(--lpa-ink, currentColor));
+  border-radius: var(--lpa-w, 2px);
+}
+.lpa-mark--box {
+  border: var(--lpa-w, 2px) solid var(--lpa-ink, currentColor);
+  border-radius: 3px;
+}
+
+/* Emphasis for decorative marks: a quiet ink-tinted wash instead of the fill's
+   outline ring, so an active underline doesn't masquerade as a box. */
+.lpa-highlight.lpa-mark.is-hover {
+  outline-color: transparent;
+  background: color-mix(in srgb, var(--lpa-ink, transparent) 9%, transparent);
+}
+.lpa-highlight.lpa-mark.is-active {
+  outline-color: transparent;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--lpa-ink, transparent) 15%, transparent);
+}
+
+/* ===== Mark editor popover (style + color + actions) ======================= */
+.lpa-mark-popover {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+}
+.lpa-mark-popover .lpa-styles,
+.lpa-mark-popover .lpa-swatches {
+  gap: 4px;
+}
+.lpa-popover-actions {
+  display: flex;
+  gap: 6px;
+}
+.lpa-popover-actions button {
+  flex: 1;
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.lpa-popover-actions .lpa-danger {
+  color: var(--text-error);
 }
 
 /* ===== pdf.js text layer (selection) =======================================
@@ -287,6 +429,35 @@
   height: 12px;
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--background-modifier-border);
+}
+/* Style-aware chip: encodes both color and style at a glance. */
+.lpa-annotation-color.lpa-mark-chip {
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  box-shadow: none;
+  flex: 0 0 auto;
+}
+.lpa-mark-chip.lpa-mark--highlight {
+  background: var(--lpa-fill);
+}
+.lpa-mark-chip.lpa-mark--box {
+  border: 1.5px solid var(--lpa-ink);
+}
+.lpa-mark-chip.lpa-mark--underline,
+.lpa-mark-chip.lpa-mark--dashed,
+.lpa-mark-chip.lpa-mark--dotted,
+.lpa-mark-chip.lpa-mark--comment {
+  background: color-mix(in srgb, var(--lpa-ink) 10%, transparent);
+}
+.lpa-mark-chip.lpa-mark--underline { border-bottom: 2px solid var(--lpa-ink); }
+.lpa-mark-chip.lpa-mark--dashed { border-bottom: 2px dashed var(--lpa-ink); }
+.lpa-mark-chip.lpa-mark--dotted { border-bottom: 2px dotted var(--lpa-ink); }
+.lpa-mark-chip.lpa-mark--comment {
+  border-bottom: 2px dotted color-mix(in srgb, var(--lpa-ink) 55%, transparent);
+}
+.lpa-mark-chip.lpa-mark--strike {
+  background: linear-gradient(var(--lpa-ink), var(--lpa-ink)) center / 100% 2px no-repeat;
 }
 .lpa-annotation-actions {
   margin-left: auto;

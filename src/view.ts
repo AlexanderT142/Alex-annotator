@@ -9,15 +9,20 @@
  * resize. Highlight clicks are hit-tested in JS so they never block text
  * selection.
  */
-import { FileView, TFile, WorkspaceLeaf, Notice, Menu } from "obsidian";
+import { FileView, TFile, WorkspaceLeaf, Notice } from "obsidian";
 import { pdfjsLib, initPdfEngine, getPdfEngineStatus, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
 import {
   AnnotationStore,
   DEFAULT_COLOR,
-  HL_COLORS,
+  PALETTE,
+  resolvePalette,
+  MARK_STYLES,
+  MARK_STYLE_LABELS,
+  markStyleOf,
   newId,
   sidecarPathFor,
   type Highlight,
+  type MarkStyle,
   type PdfRect,
 } from "./annotations";
 import { buildDocIndex, anchorQuote } from "./anchor";
@@ -73,11 +78,14 @@ export class PdfAnnotatorView extends FileView {
   private annotationListEl!: HTMLElement;
   private annotationCountEl!: HTMLElement;
   private swatchEls: HTMLElement[] = [];
+  private styleBtnEls: HTMLElement[] = [];
 
   private pdfDoc: any | null = null;
   private pdfWorker: any | null = null;
   private store: AnnotationStore | null = null;
   private currentColor = DEFAULT_COLOR;
+  private currentStyle: MarkStyle = "highlight";
+  private markPopoverCleanup: (() => void) | null = null;
 
   private pageViews: PageView[] = [];
   private pageSizes: (Size | null)[] = [];
@@ -135,17 +143,34 @@ export class PdfAnnotatorView extends FileView {
     this.toolbarEl = this.rootEl.createDiv({ cls: "lpa-toolbar" });
     this.titleEl = this.toolbarEl.createSpan({ cls: "lpa-title", text: "PDF Annotator" });
 
-    // color swatches (active color for new highlights)
-    const swatches = this.toolbarEl.createDiv({ cls: "lpa-swatches" });
+    // The "pen": pick a STYLE and a COLOR (two small additive rows, never a
+    // style×color grid). Drag-select then applies the current pen in one gesture.
+    const pen = this.toolbarEl.createDiv({ cls: "lpa-pen" });
+
+    const styles = pen.createDiv({ cls: "lpa-styles", attr: { role: "radiogroup", "aria-label": "Mark style" } });
+    this.styleBtnEls = [];
+    for (const st of MARK_STYLES) {
+      const btn = styles.createEl("button", {
+        cls: "lpa-style-btn",
+        attr: { "aria-label": MARK_STYLE_LABELS[st], title: MARK_STYLE_LABELS[st] },
+      });
+      btn.dataset.style = st;
+      buildStylePreview(btn, st);
+      btn.onclick = () => this.setActiveStyle(st);
+      this.styleBtnEls.push(btn);
+    }
+
+    const swatches = pen.createDiv({ cls: "lpa-swatches" });
     this.swatchEls = [];
-    for (const [name, value] of Object.entries(HL_COLORS)) {
-      const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": name } });
-      sw.style.background = value;
-      sw.dataset.color = value;
-      sw.onclick = () => this.setActiveColor(value);
+    for (const p of PALETTE) {
+      const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
+      sw.style.background = p.fill;
+      sw.dataset.color = p.fill;
+      sw.onclick = () => this.setActiveColor(p.fill);
       this.swatchEls.push(sw);
     }
     this.setActiveColor(this.currentColor);
+    this.setActiveStyle(this.currentStyle);
 
     const zoomOut = this.toolbarEl.createEl("button", { text: "−", attr: { "aria-label": "Zoom out" } });
     zoomOut.onclick = () => this.zoomBy(1 / ZOOM_STEP);
@@ -171,6 +196,28 @@ export class PdfAnnotatorView extends FileView {
   private setActiveColor(value: string): void {
     this.currentColor = value;
     for (const sw of this.swatchEls) sw.toggleClass("is-active", sw.dataset.color === value);
+    this.tintStylePreviews();
+  }
+
+  private setActiveStyle(style: MarkStyle): void {
+    this.currentStyle = style;
+    for (const b of this.styleBtnEls) {
+      const on = b.dataset.style === style;
+      b.toggleClass("is-active", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    }
+  }
+
+  /** Paint the style-preview chips in the currently selected ink so the pen
+   * reads as "this style, this color" at a glance. */
+  private tintStylePreviews(): void {
+    const pal = resolvePalette(this.currentColor);
+    const ink = pal?.ink ?? this.currentColor;
+    const fill = pal?.fill ?? this.currentColor;
+    for (const b of this.styleBtnEls) {
+      b.style.setProperty("--lpa-ink", ink);
+      b.style.setProperty("--lpa-fill", fill);
+    }
   }
 
   private refreshStatusDot(): void {
@@ -338,8 +385,14 @@ export class PdfAnnotatorView extends FileView {
         attr: { "aria-label": `Go to page ${h.page + 1}` },
       });
       pageButton.onclick = () => void this.revealHighlight(h.id, { scrollSidebar: false });
-      const color = head.createDiv({ cls: "lpa-annotation-color" });
-      color.style.background = highlightPaintColor(h.color);
+      const st = markStyleOf(h);
+      const pal = resolvePalette(h.color);
+      const color = head.createDiv({
+        cls: `lpa-annotation-color lpa-mark-chip lpa-mark--${st}`,
+        attr: { title: MARK_STYLE_LABELS[st] },
+      });
+      color.style.setProperty("--lpa-ink", pal?.ink ?? markInkColor(h.color));
+      color.style.setProperty("--lpa-fill", pal?.fill ?? h.color);
       const actions = head.createDiv({ cls: "lpa-annotation-actions" });
       const copy = actions.createEl("button", { text: "Copy", attr: { "aria-label": "Copy annotation text" } });
       copy.onclick = async () => {
@@ -528,32 +581,27 @@ export class PdfAnnotatorView extends FileView {
     pv.hlLayer.empty();
     if (!this.store || !pv.page) return;
     const vp = pv.page.getViewport({ scale: this.scale });
-    const rects: HighlightPaintRect[] = [];
+    const marks = this.store.byPage(pv.index);
+
+    // ---- Fill highlights: coalesce same-color rects + occlude overlaps so
+    // overlapping fills never compound into a dark muddy patch. ----
+    const fillRects: HighlightPaintRect[] = [];
     let order = 0;
-    for (const h of this.store.byPage(pv.index)) {
+    for (const h of marks) {
+      if (markStyleOf(h) !== "highlight") continue;
       order++;
-      for (const r of h.rects) {
-        const a = vp.convertToViewportPoint(r.x1, r.y1);
-        const b = vp.convertToViewportPoint(r.x2, r.y2);
-        const left = Math.min(a[0], b[0]);
-        const top = Math.min(a[1], b[1]);
-        const right = Math.max(a[0], b[0]);
-        const bottom = Math.max(a[1], b[1]);
-        if (right - left < 0.5 || bottom - top < 0.5) continue;
-        rects.push({
-          left,
-          top,
-          right,
-          bottom,
-          color: h.color,
-          order,
+      for (const r of this.rectToViewport(vp, h.rects)) {
+        if (r.right - r.left < 0.5 || r.bottom - r.top < 0.5) continue;
+        fillRects.push({
+          left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+          color: h.color, order,
           ids: new Set([h.id]),
           notes: h.note ? new Set([h.note]) : new Set(),
         });
       }
     }
-    for (const r of occludeHighlightRects(coalesceHighlightRects(rects))) {
-      const div = pv.hlLayer.createDiv({ cls: "lpa-highlight" });
+    for (const r of occludeHighlightRects(coalesceHighlightRects(fillRects))) {
+      const div = pv.hlLayer.createDiv({ cls: "lpa-highlight lpa-mark--highlight" });
       div.style.left = `${r.left}px`;
       div.style.top = `${r.top}px`;
       div.style.width = `${r.right - r.left}px`;
@@ -566,6 +614,102 @@ export class PdfAnnotatorView extends FileView {
       div.toggleClass("is-active", !!this.activeHighlightId && ids.includes(this.activeHighlightId));
       div.toggleClass("is-hover", !!this.hoverHighlightId && ids.includes(this.hoverHighlightId));
     }
+
+    // ---- Decorative styles (underline / dashed / dotted / strike / box /
+    // comment): rendered per-mark, one continuous stroke per visual line. ----
+    const metrics = this.lineMetrics();
+    for (const h of marks) {
+      const st = markStyleOf(h);
+      if (st === "highlight") continue;
+      const lines = mergeLineRects(this.rectToViewport(vp, h.rects));
+      for (const lr of lines) {
+        this.paintDecorativeLine(pv.hlLayer, h, st, lr, metrics);
+      }
+    }
+  }
+
+  /** Convert PDF-space rects to viewport rects (left/top/right/bottom px). */
+  private rectToViewport(
+    vp: any,
+    rects: PdfRect[]
+  ): Array<{ left: number; top: number; right: number; bottom: number }> {
+    const out: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+    for (const r of rects) {
+      const a = vp.convertToViewportPoint(r.x1, r.y1);
+      const b = vp.convertToViewportPoint(r.x2, r.y2);
+      out.push({
+        left: Math.min(a[0], b[0]),
+        top: Math.min(a[1], b[1]),
+        right: Math.max(a[0], b[0]),
+        bottom: Math.max(a[1], b[1]),
+      });
+    }
+    return out;
+  }
+
+  /** Stroke weight + dash geometry, scaled with zoom for consistent weight. */
+  private lineMetrics(): {
+    weight: number;
+    dash: number;
+    dashGap: number;
+    dot: number;
+    dotGap: number;
+  } {
+    const s = this.scale;
+    return {
+      weight: clamp(1.4, s * 1.35, 3),
+      dash: Math.max(4, Math.round(s * 5)),
+      dashGap: Math.max(3, Math.round(s * 4)),
+      dot: Math.max(1.4, +(s * 1.6).toFixed(2)),
+      dotGap: Math.max(2.4, +(s * 2.8).toFixed(2)),
+    };
+  }
+
+  private paintDecorativeLine(
+    layer: HTMLElement,
+    h: Highlight,
+    st: MarkStyle,
+    lr: { left: number; top: number; right: number; bottom: number },
+    m: { weight: number; dash: number; dashGap: number; dot: number; dotGap: number }
+  ): void {
+    const el = layer.createDiv({ cls: `lpa-highlight lpa-mark lpa-mark--${st}` });
+    el.style.left = `${lr.left}px`;
+    el.style.top = `${lr.top}px`;
+    el.style.width = `${lr.right - lr.left}px`;
+    el.style.height = `${lr.bottom - lr.top}px`;
+
+    const pal = resolvePalette(h.color);
+    const ink = pal?.ink ?? markInkColor(h.color);
+    el.style.setProperty("--lpa-ink", ink);
+    el.style.setProperty("--lpa-w", `${m.weight}px`);
+
+    if (st === "dashed") {
+      el.style.setProperty(
+        "--lpa-deco",
+        `repeating-linear-gradient(90deg, ${ink} 0 ${m.dash}px, transparent ${m.dash}px ${m.dash + m.dashGap}px)`
+      );
+    } else if (st === "dotted") {
+      el.style.setProperty(
+        "--lpa-deco",
+        `repeating-linear-gradient(90deg, ${ink} 0 ${m.dot}px, transparent ${m.dot}px ${m.dot + m.dotGap}px)`
+      );
+    } else if (st === "comment") {
+      // Quiet: a faint dotted underline in low-alpha ink, no fill.
+      const faint = withAlpha(ink, 0.5);
+      el.style.setProperty(
+        "--lpa-deco",
+        `repeating-linear-gradient(90deg, ${faint} 0 ${m.dot}px, transparent ${m.dot}px ${m.dot + m.dotGap}px)`
+      );
+    } else {
+      // underline / strike: solid stroke
+      el.style.setProperty("--lpa-deco", ink);
+    }
+
+    el.dataset.hlIds = h.id;
+    el.dataset.hlId = h.id;
+    if (h.note) el.setAttribute("aria-label", h.note);
+    el.toggleClass("is-active", h.id === this.activeHighlightId);
+    el.toggleClass("is-hover", h.id === this.hoverHighlightId);
   }
 
   private onMouseUp(evt: MouseEvent): void {
@@ -653,7 +797,7 @@ export class PdfAnnotatorView extends FileView {
     if (byPage.size === 0) return;
     for (const [pageIndex, rects] of byPage) {
       const h: Highlight = {
-        id: newId(), page: pageIndex, color: this.currentColor, text,
+        id: newId(), page: pageIndex, color: this.currentColor, style: this.currentStyle, text,
         rects, created: new Date().toISOString(), source: "manual",
       };
       this.store!.add(h);
@@ -672,47 +816,135 @@ export class PdfAnnotatorView extends FileView {
     if (hit) {
       evt.preventDefault();
       this.activateHighlight(hit.highlight.id, { scrollSidebar: true });
-      this.showHighlightMenu(hit.highlight, evt, hit.pageView);
+      this.openMarkPopover(hit.highlight, evt, hit.pageView);
+    } else {
+      this.closeMarkPopover();
     }
   }
 
-  private showHighlightMenu(h: Highlight, evt: MouseEvent, pv: PageView): void {
-    const menu = new Menu();
-    const preview = h.text.replace(/\s+/g, " ").trim();
-    menu.addItem((i) =>
-      i.setTitle(preview.length > 48 ? `“${preview.slice(0, 47)}…”` : `“${preview}”`)
-        .setIcon("quote-glyph")
-        .setDisabled(true)
-    );
-    menu.addSeparator();
-    for (const [name, value] of Object.entries(HL_COLORS)) {
-      menu.addItem((i) =>
-        i.setTitle(name[0].toUpperCase() + name.slice(1))
-          .setChecked(h.color === value)
-          .onClick(() => {
-            this.store?.update(h.id, { color: value });
-            this.renderHighlights(pv);
-            this.renderAnnotationSidebar();
-          })
-      );
+  /**
+   * The post-hoc editor: a calm, non-modal popover with the SAME two axes as the
+   * pen — change style and/or color on an existing mark, live, in one click each.
+   * Plus copy + delete. No native menu, no dialog.
+   */
+  private openMarkPopover(h: Highlight, evt: MouseEvent, pv: PageView): void {
+    this.closeMarkPopover();
+    const doc = this.pagesEl.ownerDocument;
+    const pop = doc.body.createDiv({ cls: "lpa-mark-popover" });
+
+    const rerender = () => {
+      const cur = this.store?.get(h.id);
+      if (!cur) return;
+      const target = this.pageViews[cur.page] ?? pv;
+      if (target?.rendered) this.renderHighlights(target);
+      this.renderAnnotationSidebar();
+    };
+
+    // Row 1 — style
+    const styleRow = pop.createDiv({ cls: "lpa-styles", attr: { role: "radiogroup", "aria-label": "Mark style" } });
+    const syncStyleChecks = () => {
+      const cur = markStyleOf(this.store?.get(h.id));
+      for (const b of Array.from(styleRow.children) as HTMLElement[]) {
+        b.toggleClass("is-active", b.dataset.style === cur);
+      }
+    };
+    for (const st of MARK_STYLES) {
+      const btn = styleRow.createEl("button", {
+        cls: "lpa-style-btn",
+        attr: { "aria-label": MARK_STYLE_LABELS[st], title: MARK_STYLE_LABELS[st] },
+      });
+      btn.dataset.style = st;
+      const pal = resolvePalette(this.store?.get(h.id)?.color ?? h.color);
+      buildStylePreview(btn, st);
+      btn.style.setProperty("--lpa-ink", pal?.ink ?? h.color);
+      btn.style.setProperty("--lpa-fill", pal?.fill ?? h.color);
+      btn.onclick = () => {
+        this.store?.update(h.id, { style: st });
+        rerender();
+        syncStyleChecks();
+      };
     }
-    menu.addSeparator();
-    menu.addItem((i) =>
-      i.setTitle("Copy text").setIcon("copy").onClick(async () => {
-        await navigator.clipboard.writeText(h.text);
-        new Notice("Copied highlight text");
-      })
-    );
-    menu.addItem((i) =>
-      i.setTitle("Delete highlight").setIcon("trash").onClick(() => {
-        this.store?.remove(h.id);
-        if (this.activeHighlightId === h.id) this.activeHighlightId = null;
-        if (this.hoverHighlightId === h.id) this.hoverHighlightId = null;
-        this.renderHighlights(pv);
-        this.renderAnnotationSidebar();
-      })
-    );
-    menu.showAtMouseEvent(evt);
+
+    // Row 2 — color
+    const colorRow = pop.createDiv({ cls: "lpa-swatches" });
+    const syncColorChecks = () => {
+      const cur = this.store?.get(h.id)?.color;
+      for (const sw of Array.from(colorRow.children) as HTMLElement[]) {
+        sw.toggleClass("is-active", sw.dataset.color === cur);
+      }
+    };
+    for (const p of PALETTE) {
+      const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
+      sw.style.background = p.fill;
+      sw.dataset.color = p.fill;
+      sw.onclick = () => {
+        this.store?.update(h.id, { color: p.fill });
+        rerender();
+        // restyle the style previews to the new ink
+        for (const b of Array.from(styleRow.children) as HTMLElement[]) {
+          b.style.setProperty("--lpa-ink", p.ink);
+          b.style.setProperty("--lpa-fill", p.fill);
+        }
+        syncColorChecks();
+      };
+    }
+
+    // Row 3 — actions
+    const actions = pop.createDiv({ cls: "lpa-popover-actions" });
+    const copyBtn = actions.createEl("button", { text: "Copy" });
+    copyBtn.onclick = async () => {
+      await navigator.clipboard.writeText(this.store?.get(h.id)?.text ?? h.text);
+      new Notice("Copied mark text");
+    };
+    const noteBtn = actions.createEl("button", { text: "Note" });
+    noteBtn.onclick = () => {
+      this.closeMarkPopover();
+      this.activateHighlight(h.id, { scrollSidebar: true, focusNote: true });
+    };
+    const delBtn = actions.createEl("button", { cls: "lpa-danger", text: "Delete" });
+    delBtn.onclick = () => {
+      this.store?.remove(h.id);
+      if (this.activeHighlightId === h.id) this.activeHighlightId = null;
+      if (this.hoverHighlightId === h.id) this.hoverHighlightId = null;
+      this.closeMarkPopover();
+      rerender();
+    };
+
+    syncStyleChecks();
+    syncColorChecks();
+
+    // Position near the click, clamped into the viewport.
+    pop.style.visibility = "hidden";
+    const vw = doc.documentElement.clientWidth;
+    const vh = doc.documentElement.clientHeight;
+    const pr = pop.getBoundingClientRect();
+    let x = evt.clientX + 6;
+    let y = evt.clientY + 10;
+    if (x + pr.width > vw - 8) x = Math.max(8, vw - pr.width - 8);
+    if (y + pr.height > vh - 8) y = Math.max(8, evt.clientY - pr.height - 10);
+    pop.style.left = `${x}px`;
+    pop.style.top = `${y}px`;
+    pop.style.visibility = "visible";
+
+    const onDocPointer = (e: MouseEvent) => {
+      if (!pop.contains(e.target as Node)) this.closeMarkPopover();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") this.closeMarkPopover();
+    };
+    // defer so the opening click doesn't immediately dismiss it
+    window.setTimeout(() => doc.addEventListener("mousedown", onDocPointer, true), 0);
+    doc.addEventListener("keydown", onKey, true);
+    this.markPopoverCleanup = () => {
+      doc.removeEventListener("mousedown", onDocPointer, true);
+      doc.removeEventListener("keydown", onKey, true);
+      pop.remove();
+    };
+  }
+
+  private closeMarkPopover(): void {
+    this.markPopoverCleanup?.();
+    this.markPopoverCleanup = null;
   }
 
   /** Scroll to a highlight and flash it (used by markdown back-links, Phase 2). */
@@ -847,6 +1079,7 @@ export class PdfAnnotatorView extends FileView {
   private setScale(next: number): void {
     const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
     if (Math.abs(clamped - this.scale) < 1e-3) return;
+    this.closeMarkPopover();
 
     const anchorIdx = [...this.visible].sort((a, b) => a - b)[0] ?? 0;
     const anchor = this.pageViews[anchorIdx];
@@ -903,6 +1136,7 @@ export class PdfAnnotatorView extends FileView {
   }
 
   private teardownDocument(): void {
+    this.closeMarkPopover();
     this.renderEpoch++;
     this.io?.disconnect();
     this.io = null;
@@ -1050,30 +1284,56 @@ function pushHighlightPiece(
   });
 }
 
-function highlightPaintColor(color: string): string {
+interface Rgba { r: number; g: number; b: number; a: number; }
+
+function parseColor(color: string): Rgba | null {
   const rgb = color.match(
     /^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+)\s*)?\)$/i
   );
   if (rgb) {
-    const r = clampCssByte(Number(rgb[1]));
-    const g = clampCssByte(Number(rgb[2]));
-    const b = clampCssByte(Number(rgb[3]));
-    const alpha = rgb[4] === undefined ? MAX_HIGHLIGHT_ALPHA : Math.min(Number(rgb[4]), MAX_HIGHLIGHT_ALPHA);
-    return `rgba(${r}, ${g}, ${b}, ${clampCssAlpha(alpha)})`;
+    return {
+      r: clampCssByte(Number(rgb[1])),
+      g: clampCssByte(Number(rgb[2])),
+      b: clampCssByte(Number(rgb[3])),
+      a: rgb[4] === undefined ? 1 : clampCssAlpha(Number(rgb[4])),
+    };
   }
-
   const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
   if (hex) {
-    const value = hex[1].length === 3
-      ? hex[1].split("").map((ch) => ch + ch).join("")
-      : hex[1];
-    const r = parseInt(value.slice(0, 2), 16);
-    const g = parseInt(value.slice(2, 4), 16);
-    const b = parseInt(value.slice(4, 6), 16);
-    return `rgba(${r}, ${g}, ${b}, ${MAX_HIGHLIGHT_ALPHA})`;
+    const value = hex[1].length === 3 ? hex[1].split("").map((ch) => ch + ch).join("") : hex[1];
+    return {
+      r: parseInt(value.slice(0, 2), 16),
+      g: parseInt(value.slice(2, 4), 16),
+      b: parseInt(value.slice(4, 6), 16),
+      a: 1,
+    };
   }
+  return null;
+}
 
-  return color;
+/** Fill color for a highlight: normalized to the muted palette, alpha-capped so
+ * stacked fills can't darken into a muddy patch and text stays readable. */
+function highlightPaintColor(color: string): string {
+  const fill = resolvePalette(color)?.fill ?? color;
+  const c = parseColor(fill);
+  if (!c) return fill;
+  const a = Math.min(c.a === 1 ? MAX_HIGHLIGHT_ALPHA : c.a, MAX_HIGHLIGHT_ALPHA);
+  return `rgba(${c.r}, ${c.g}, ${c.b}, ${clampCssAlpha(a)})`;
+}
+
+/** Crisp stroke color for line/box styles when a stored color has no palette
+ * entry (custom colors): darken the hue and make it near-opaque. */
+function markInkColor(color: string): string {
+  const c = parseColor(color);
+  if (!c) return color;
+  const k = 0.62;
+  return `rgba(${Math.round(c.r * k)}, ${Math.round(c.g * k)}, ${Math.round(c.b * k)}, 0.95)`;
+}
+
+function withAlpha(color: string, alpha: number): string {
+  const c = parseColor(color);
+  if (!c) return color;
+  return `rgba(${c.r}, ${c.g}, ${c.b}, ${clampCssAlpha(alpha)})`;
 }
 
 function clampCssByte(value: number): number {
@@ -1084,6 +1344,52 @@ function clampCssByte(value: number): number {
 function clampCssAlpha(value: number): number {
   if (!Number.isFinite(value)) return MAX_HIGHLIGHT_ALPHA;
   return Math.min(1, Math.max(0, value));
+}
+
+function clamp(min: number, value: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Merge a mark's viewport rects into one continuous rect per visual line, so a
+ * decorative stroke (underline/strike/box) is unbroken across word gaps and
+ * wraps cleanly line-by-line.
+ */
+function mergeLineRects(
+  rects: Array<{ left: number; top: number; right: number; bottom: number }>
+): Array<{ left: number; top: number; right: number; bottom: number }> {
+  const clean = rects.filter((r) => r.right - r.left >= 0.5 && r.bottom - r.top >= 0.5);
+  const lines: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+  for (const r of [...clean].sort((a, b) => a.top - b.top || a.left - b.left)) {
+    const rCenter = (r.top + r.bottom) / 2;
+    const minH = r.bottom - r.top;
+    const line = lines.find((l) => {
+      const lCenter = (l.top + l.bottom) / 2;
+      const h = Math.min(minH, l.bottom - l.top);
+      const overlap = Math.min(l.bottom, r.bottom) - Math.max(l.top, r.top);
+      return overlap >= h * 0.5 && Math.abs(lCenter - rCenter) <= Math.max(2, h * 0.6);
+    });
+    if (line) {
+      line.left = Math.min(line.left, r.left);
+      line.right = Math.max(line.right, r.right);
+      line.top = Math.min(line.top, r.top);
+      line.bottom = Math.max(line.bottom, r.bottom);
+    } else {
+      lines.push({ ...r });
+    }
+  }
+  return lines.sort((a, b) => a.top - b.top || a.left - b.left);
+}
+
+/**
+ * Build a tiny WYSIWYG preview of a mark style inside a chooser button: the
+ * letter "A" wearing that exact decoration, in the current ink. Lets the chooser
+ * present style and color as two small additive rows (no style×color grid).
+ */
+function buildStylePreview(btn: HTMLElement, style: MarkStyle): void {
+  btn.empty();
+  const s = btn.createSpan({ cls: `lpa-style-sample lpa-style-sample--${style}`, text: "A" });
+  s.setAttribute("aria-hidden", "true");
 }
 
 function highlightIdsForElement(el: HTMLElement): string[] {
