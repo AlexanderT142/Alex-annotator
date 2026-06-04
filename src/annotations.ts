@@ -18,10 +18,52 @@ export interface PdfRect {
   y2: number;
 }
 
+/**
+ * The visual STYLE axis, orthogonal to color/meaning. Stored on each mark.
+ * Absent on legacy marks → treated as "highlight" (see markStyleOf), so old
+ * sidecars stay fully valid without migration.
+ */
+export type MarkStyle =
+  | "highlight" // semi-transparent fill
+  | "underline" // solid underline
+  | "dashed" // dashed underline
+  | "dotted" // dotted underline
+  | "strike" // strikethrough
+  | "box" // outlined rectangle around the text
+  | "comment"; // "naked" note anchored to a span (quiet dotted underline, no fill)
+
+export const MARK_STYLES: MarkStyle[] = [
+  "highlight",
+  "underline",
+  "dashed",
+  "dotted",
+  "strike",
+  "box",
+  "comment",
+];
+
+/** Human label for menus / prose. */
+export const MARK_STYLE_LABELS: Record<MarkStyle, string> = {
+  highlight: "Highlight",
+  underline: "Underline",
+  dashed: "Dashed underline",
+  dotted: "Dotted underline",
+  strike: "Strikethrough",
+  box: "Box",
+  comment: "Comment",
+};
+
+/** Coerce an unknown/absent style to a valid one (legacy marks default to fill). */
+export function markStyleOf(h: { style?: string } | null | undefined): MarkStyle {
+  const s = (h?.style ?? "highlight") as MarkStyle;
+  return MARK_STYLES.includes(s) ? s : "highlight";
+}
+
 export interface Highlight {
   id: string;
   page: number; // 0-based page index
-  color: string; // rgba/hex
+  color: string; // rgba/hex — the COLOR/meaning axis (a palette `fill` value)
+  style?: MarkStyle; // the STYLE axis; absent ⇒ "highlight" (backward compatible)
   text: string; // selected / quoted text
   note?: string; // user comment (carried over from legacy import)
   rects: PdfRect[]; // one rect per visual line
@@ -38,22 +80,61 @@ export interface AnnotationDoc {
   highlights: Highlight[];
 }
 
-export const HL_COLORS: Record<string, string> = {
-  yellow: "rgba(255, 214, 0, 0.40)",
-  green: "rgba(106, 217, 126, 0.42)",
-  blue: "rgba(90, 170, 255, 0.40)",
-  pink: "rgba(255, 130, 200, 0.42)",
-  red: "rgba(255, 110, 110, 0.42)",
-};
-export const DEFAULT_COLOR = HL_COLORS.yellow;
+/**
+ * The COLOR/meaning palette. Restrained, muted hues — legible over body text,
+ * not neon. `fill` is the stored color (semi-transparent, used as a highlight
+ * wash; painted alpha is additionally capped at render time). `ink` is a
+ * near-opaque, slightly darker version used for line styles (underline / dashed
+ * / strike / box), which need to read crisply as a thin stroke.
+ */
+export interface PaletteEntry {
+  name: string;
+  fill: string; // stored on the mark as `color`
+  ink: string; // derived stroke color for line/box styles
+  emoji: string;
+}
 
-const COLOR_EMOJI: Array<[string, string]> = [
-  ["yellow", "🟨"],
-  ["green", "🟩"],
-  ["blue", "🟦"],
-  ["pink", "🟪"],
-  ["red", "🟥"],
+export const PALETTE: PaletteEntry[] = [
+  { name: "yellow", fill: "rgba(232, 194, 76, 0.42)", ink: "rgba(166, 124, 12, 0.95)", emoji: "🟨" },
+  { name: "green", fill: "rgba(124, 178, 122, 0.42)", ink: "rgba(58, 122, 70, 0.95)", emoji: "🟩" },
+  { name: "blue", fill: "rgba(120, 160, 208, 0.42)", ink: "rgba(52, 104, 168, 0.95)", emoji: "🟦" },
+  { name: "pink", fill: "rgba(206, 138, 168, 0.44)", ink: "rgba(160, 70, 112, 0.95)", emoji: "🟪" },
+  { name: "red", fill: "rgba(202, 110, 100, 0.44)", ink: "rgba(168, 60, 52, 0.95)", emoji: "🟥" },
 ];
+
+/** name → fill, kept for any code that wants the simple map. */
+export const HL_COLORS: Record<string, string> = Object.fromEntries(
+  PALETTE.map((p) => [p.name, p.fill])
+);
+export const DEFAULT_COLOR = PALETTE[0].fill;
+
+/**
+ * Old (pre-refinement) saturated fills → current palette name. Lets legacy
+ * marks render with the calmer palette WITHOUT rewriting the sidecar: we never
+ * mutate the stored string, we only resolve it at paint time.
+ */
+const LEGACY_FILL_TO_NAME: Record<string, string> = {
+  "rgba(255, 214, 0, 0.40)": "yellow",
+  "rgba(106, 217, 126, 0.42)": "green",
+  "rgba(90, 170, 255, 0.40)": "blue",
+  "rgba(255, 130, 200, 0.42)": "pink",
+  "rgba(255, 110, 110, 0.42)": "red",
+};
+
+/**
+ * Resolve any stored color to a palette entry (current fills, legacy fills, or
+ * a normalized key match). Returns null for genuinely custom colors.
+ */
+export function resolvePalette(color: string): PaletteEntry | null {
+  const norm = color.replace(/\s+/g, "");
+  for (const p of PALETTE) if (p.fill.replace(/\s+/g, "") === norm) return p;
+  const legacyName = LEGACY_FILL_TO_NAME[color] ?? LEGACY_FILL_TO_NAME[norm];
+  if (legacyName) return PALETTE.find((p) => p.name === legacyName) ?? null;
+  for (const [legacy, name] of Object.entries(LEGACY_FILL_TO_NAME)) {
+    if (legacy.replace(/\s+/g, "") === norm) return PALETTE.find((p) => p.name === name) ?? null;
+  }
+  return null;
+}
 
 export function newId(): string {
   try {
@@ -64,10 +145,7 @@ export function newId(): string {
 }
 
 function colorEmoji(color: string): string {
-  for (const [name, emoji] of COLOR_EMOJI) {
-    if (HL_COLORS[name] === color) return emoji;
-  }
-  return "🟨";
+  return resolvePalette(color)?.emoji ?? "🟨";
 }
 
 /** Derive the sidecar path from a PDF's vault path. */
@@ -99,7 +177,9 @@ export function serializeAnnotations(doc: AnnotationDoc, pdfBasename: string): s
     for (const h of ordered) {
       const text = h.text.replace(/\s+/g, " ").trim();
       const short = text.length > 220 ? text.slice(0, 217) + "…" : text;
-      let line = `- **p.${h.page + 1}** ${colorEmoji(h.color)} ^${h.id} — "${short}"`;
+      const st = markStyleOf(h);
+      const styleTag = st === "highlight" ? "" : ` _(${MARK_STYLE_LABELS[st].toLowerCase()})_`;
+      let line = `- **p.${h.page + 1}** ${colorEmoji(h.color)}${styleTag} ^${h.id} — "${short}"`;
       if (h.note && h.note.trim()) line += `\n  - 📝 ${h.note.replace(/\s+/g, " ").trim()}`;
       lines.push(line);
     }
