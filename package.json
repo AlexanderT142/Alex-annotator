@@ -1,0 +1,23 @@
+{
+  "name": "local-pdf-annotator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Obsidian PDF reader with persistent text-highlight annotations. Bundles its own pinned pdf.js + worker to structurally avoid version-mismatch conflicts with Obsidian's internal pdf.js.",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "typecheck": "tsc -noEmit -skipLibCheck"
+  },
+  "keywords": ["obsidian-plugin"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "pdfjs-dist": "3.11.174"
+  }
+}

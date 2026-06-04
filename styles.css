@@ -1,0 +1,310 @@
+/* ===== Local PDF Annotator ===================================================
+   Layout: a scrollable column of pages. Each page is a positioning context
+   that stacks three layers: canvas (raster) < highlights < text (selectable).
+   ============================================================================ */
+
+.lpa-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--background-secondary);
+}
+
+.lpa-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  user-select: none;
+}
+.lpa-toolbar .lpa-title {
+  font-weight: 600;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lpa-toolbar button {
+  cursor: pointer;
+}
+.lpa-zoom-label {
+  min-width: 48px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.lpa-status-dot {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.lpa-swatches {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.lpa-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--background-modifier-border);
+  padding: 0;
+}
+.lpa-swatch.is-active {
+  border-color: var(--text-normal);
+}
+
+.lpa-pages {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.lpa-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* One page = a positioned box sized to the current viewport. */
+.lpa-page {
+  flex: 0 0 auto;
+  position: relative;
+  overflow: hidden;
+  background: white;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+  user-select: text;
+  -webkit-user-select: text;
+  /* width/height set inline per render from the viewport */
+}
+.lpa-page > canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  z-index: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Highlights sit above the canvas, below the text layer. */
+.lpa-highlight-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none; /* individual highlight rects re-enable it */
+  z-index: 1;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.lpa-highlight {
+  position: absolute;
+  /* Visual only: clicks are hit-tested in JS so highlights never block text
+     selection (the text layer stays on top). */
+  pointer-events: none;
+  background: var(--lpa-hl-color, rgba(255, 214, 0, 0.28));
+  border-radius: 2px;
+  opacity: 1;
+  outline: 2px solid transparent;
+  transition: opacity 80ms ease, outline-color 80ms ease, box-shadow 80ms ease;
+}
+.lpa-root.has-active-highlight .lpa-highlight:not(.is-active) {
+  opacity: 0.62;
+}
+.lpa-highlight.is-hover {
+  outline-color: rgba(80, 120, 180, 0.45);
+}
+.lpa-highlight.is-active {
+  opacity: 1;
+  outline-color: rgba(80, 120, 180, 0.72);
+  box-shadow: 0 0 0 2px rgba(80, 120, 180, 0.22);
+}
+.lpa-highlight.lpa-flash {
+  animation: lpa-flash 1.1s ease;
+}
+@keyframes lpa-flash {
+  0%,
+  100% {
+    outline-color: transparent;
+  }
+  30% {
+    outline-color: var(--interactive-accent);
+    box-shadow: 0 0 0 3px var(--interactive-accent);
+  }
+}
+
+/* ===== pdf.js text layer (selection) =======================================
+   Text is rendered transparent on top of the canvas so the user can select it;
+   the browser's native ::selection paints the highlight while dragging. */
+.lpa-text-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-align: initial;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  z-index: 2;
+  opacity: 1;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.lpa-text-layer span,
+.lpa-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.lpa-text-layer ::selection {
+  background: rgba(64, 120, 255, 0.35);
+  color: transparent;
+}
+/* pdf.js end-of-content sentinel */
+.lpa-text-layer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
+}
+.lpa-text-layer.lpa-selecting .endOfContent {
+  top: 0;
+}
+
+.lpa-status {
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.lpa-status.lpa-error {
+  color: var(--text-error);
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  text-align: left;
+}
+
+.lpa-sidebar {
+  flex: 0 0 320px;
+  min-width: 260px;
+  max-width: 380px;
+  border-left: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lpa-sidebar-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.lpa-sidebar-title {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+.lpa-sidebar-count {
+  margin-left: auto;
+  min-width: 24px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+}
+.lpa-annotation-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+.lpa-empty-annotations {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 8px 2px;
+}
+.lpa-annotation-item {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--background-secondary);
+  transition: border-color 80ms ease, background-color 80ms ease, box-shadow 80ms ease;
+}
+.lpa-annotation-item.is-hover {
+  border-color: rgba(80, 120, 180, 0.45);
+}
+.lpa-annotation-item.is-active {
+  border-color: rgba(80, 120, 180, 0.72);
+  background: var(--background-secondary-alt, var(--background-secondary));
+  box-shadow: inset 3px 0 0 rgba(80, 120, 180, 0.75);
+}
+.lpa-annotation-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.lpa-annotation-page,
+.lpa-annotation-actions button {
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+.lpa-annotation-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--background-modifier-border);
+}
+.lpa-annotation-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+.lpa-annotation-text {
+  color: var(--text-normal);
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+  white-space: normal;
+}
+.lpa-annotation-note {
+  width: 100%;
+  margin-top: 7px;
+  resize: vertical;
+  min-height: 44px;
+  font-size: 12px;
+  line-height: 1.35;
+}
