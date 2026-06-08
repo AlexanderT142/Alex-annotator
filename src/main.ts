@@ -154,7 +154,6 @@ class LpaSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName("Local PDF Annotator").setHeading();
 
     new Setting(containerEl)
       .setName("Make this the default PDF viewer")
