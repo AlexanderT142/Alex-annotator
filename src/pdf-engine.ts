@@ -93,21 +93,13 @@ export function initPdfEngine(): PdfEngineStatus {
     gwo.workerSrc = workerBlobUrl; // fallback only; we pass an explicit worker
     workerMode = "dedicated-per-document(blob)";
   } catch (ePort) {
-    // CSP may block blob-URL workers. Fallback: run pdf.js on the main thread
-    // but force OUR worker code to own globalThis.pdfjsWorker so the fake-worker
-    // path uses 3.11.174 instead of Obsidian's worker.
+    // CSP may block blob-URL workers. Do not use pdf.js' dynamic fake-worker
+    // fallback because Obsidian's community scanner rejects eval/script
+    // injection. Callers omit the worker and pdf.js will surface the failure.
     console.warn(`${LOG_TAG} blob Worker construction failed; using main-thread fallback`, ePort);
     blobWorkersOk = false;
-    try {
-      // Executing our classic worker bundle defines globalThis.pdfjsWorker = ours.
-      (0, eval)(workerSource);
-      gwo.workerSrc = workerBlobUrl;
-      workerMode = "mainThread(ourGlobal)";
-    } catch (eEval) {
-      gwo.workerSrc = workerBlobUrl;
-      workerMode = "workerSrc(unsafe-fallback)";
-      console.error(`${LOG_TAG} main-thread worker fallback failed`, eEval);
-    }
+    gwo.workerSrc = workerBlobUrl;
+    workerMode = "workerSrc(blob-fallback)";
   }
 
   const apiVersion: string = (pdfjsLib as { version: string }).version;

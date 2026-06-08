@@ -360,16 +360,17 @@ export class PdfAnnotatorView extends FileView {
   private refreshStatusDot(): void {
     const st = getPdfEngineStatus();
     if (!this.statusDotEl) return;
+    this.statusDotEl.removeClasses(["is-ok", "is-error"]);
     if (st?.ok) {
       this.statusDotEl.setText(`pdf.js ${st.apiVersion} ✓`);
       this.statusDotEl.setAttribute(
         "aria-label",
         `pdf.js ${st.apiVersion}: API & worker versions match (bundled, no conflict possible)`
       );
-      this.statusDotEl.style.color = "var(--text-success, var(--text-muted))";
+      this.statusDotEl.addClass("is-ok");
     } else if (st) {
       this.statusDotEl.setText(`pdf.js ${st.apiVersion} ⚠`);
-      this.statusDotEl.style.color = "var(--text-error)";
+      this.statusDotEl.addClass("is-error");
     } else {
       this.statusDotEl.setText("");
     }
@@ -476,8 +477,10 @@ export class PdfAnnotatorView extends FileView {
       const el = this.pagesEl.createDiv({ cls: "lpa-page" });
       el.dataset.index = String(i);
       const sz = this.pageSizes[i] ?? this.defaultSize;
-      el.style.width = `${Math.floor(sz.w * this.scale)}px`;
-      el.style.height = `${Math.floor(sz.h * this.scale)}px`;
+      el.setCssProps({
+        width: `${Math.floor(sz.w * this.scale)}px`,
+        height: `${Math.floor(sz.h * this.scale)}px`,
+      });
       const hlLayer = el.createDiv({ cls: "lpa-highlight-layer" });
       const noteLayer = el.createDiv({ cls: "lpa-note-layer" });
       const pv: PageView = {
@@ -514,7 +517,7 @@ export class PdfAnnotatorView extends FileView {
 
       const margin = anchor.side === "left" ? this.leftMarginEl : this.rightMarginEl;
       const card = this.createMarginCard(margin, h, anchor.side);
-      card.style.top = `${Math.max(0, anchor.idealY)}px`;
+      card.setCssProps({ top: `${Math.max(0, anchor.idealY)}px` });
     }
     this.renderAnnotationRollList();
     this.syncHighlightBindingState();
@@ -907,15 +910,19 @@ export class PdfAnnotatorView extends FileView {
       this.pageSizes[pv.index] = { w: base.width, h: base.height };
       const viewport = page.getViewport({ scale: this.scale });
 
-      pv.el.style.width = `${Math.floor(viewport.width)}px`;
-      pv.el.style.height = `${Math.floor(viewport.height)}px`;
+      pv.el.setCssProps({
+        width: `${Math.floor(viewport.width)}px`,
+        height: `${Math.floor(viewport.height)}px`,
+      });
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const canvas = document.createElement("canvas");
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      canvas.setCssProps({
+        width: `${Math.floor(viewport.width)}px`,
+        height: `${Math.floor(viewport.height)}px`,
+      });
       pv.el.insertBefore(canvas, pv.hlLayer);
       pv.canvas = canvas;
 
@@ -1000,10 +1007,12 @@ export class PdfAnnotatorView extends FileView {
     }
     for (const r of occludeHighlightRects(coalesceHighlightRects(fillRects))) {
       const div = pv.hlLayer.createDiv({ cls: "lpa-highlight lpa-mark--highlight" });
-      div.style.left = `${r.left}px`;
-      div.style.top = `${r.top}px`;
-      div.style.width = `${r.right - r.left}px`;
-      div.style.height = `${r.bottom - r.top}px`;
+      div.setCssProps({
+        left: `${r.left}px`,
+        top: `${r.top}px`,
+        width: `${r.right - r.left}px`,
+        height: `${r.bottom - r.top}px`,
+      });
       div.style.setProperty("--lpa-hl-color", highlightPaintColor(r.color));
       div.style.setProperty("--lpa-hl-color-active", activeHighlightPaintColor(r.color));
       div.style.setProperty("--lpa-hl-color-active-gloss", activeHighlightGlossColor(r.color));
@@ -1075,10 +1084,12 @@ export class PdfAnnotatorView extends FileView {
     m: { weight: number; dash: number; dashGap: number; dot: number; dotGap: number }
   ): void {
     const el = layer.createDiv({ cls: `lpa-highlight lpa-mark lpa-mark--${st}` });
-    el.style.left = `${lr.left}px`;
-    el.style.top = `${lr.top}px`;
-    el.style.width = `${lr.right - lr.left}px`;
-    el.style.height = `${lr.bottom - lr.top}px`;
+    el.setCssProps({
+      left: `${lr.left}px`,
+      top: `${lr.top}px`,
+      width: `${lr.right - lr.left}px`,
+      height: `${lr.bottom - lr.top}px`,
+    });
 
     const pal = resolvePalette(h.color);
     const ink = pal?.ink ?? markInkColor(h.color);
@@ -1128,8 +1139,7 @@ export class PdfAnnotatorView extends FileView {
       const el = pv.noteLayer.createDiv({ cls: "lpa-page-tag" });
       el.dataset.hlId = tag.id;
       el.dataset.annotationId = tag.id;
-      el.style.left = `${x}%`;
-      el.style.top = `${y}%`;
+      el.setCssProps({ left: `${x}%`, top: `${y}%` });
       el.style.setProperty("--lpa-accent", resolvePalette(annotationColor(tag))?.ink ?? markInkColor(annotationColor(tag)));
       el.toggleClass("is-active", tag.id === this.activeHighlightId);
       el.toggleClass("is-hover", tag.id === this.hoverHighlightId);
@@ -1300,7 +1310,7 @@ export class PdfAnnotatorView extends FileView {
     const swatches = pop.createDiv({ cls: "lpa-selection-swatches", attr: { "aria-label": "Highlight color" } });
     for (const p of PALETTE) {
       const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name, title: p.name } });
-      sw.style.background = p.fill;
+      sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
       sw.toggleClass("is-active", p.fill === this.currentColor);
       sw.onclick = (evt) => {
@@ -1330,7 +1340,7 @@ export class PdfAnnotatorView extends FileView {
       new Notice("Copied selected text");
     };
 
-    pop.style.visibility = "hidden";
+    pop.setCssProps({ visibility: "hidden" });
     const pr = pop.getBoundingClientRect();
     const vw = doc.documentElement.clientWidth;
     const vh = doc.documentElement.clientHeight;
@@ -1341,9 +1351,11 @@ export class PdfAnnotatorView extends FileView {
     let y = pending.anchor.y + pending.anchor.height / 2 - pr.height / 2;
     x = clamp(8, x, Math.max(8, vw - pr.width - 8));
     y = clamp(8, y, Math.max(8, vh - pr.height - 8));
-    pop.style.left = `${x}px`;
-    pop.style.top = `${y}px`;
-    pop.style.visibility = "visible";
+    pop.setCssProps({
+      left: `${x}px`,
+      top: `${y}px`,
+      visibility: "visible",
+    });
     this.rubberHandle?.setClusterElement(pop);
   }
 
@@ -1528,7 +1540,7 @@ export class PdfAnnotatorView extends FileView {
     };
     for (const p of PALETTE) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
-      sw.style.background = p.fill;
+      sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
       sw.onclick = () => {
         this.store?.update(h.id, { color: p.fill });
@@ -1574,7 +1586,7 @@ export class PdfAnnotatorView extends FileView {
     syncColorChecks();
 
     // Position near the click, clamped into the viewport.
-    pop.style.visibility = "hidden";
+    pop.setCssProps({ visibility: "hidden" });
     const vw = doc.documentElement.clientWidth;
     const vh = doc.documentElement.clientHeight;
     const pr = pop.getBoundingClientRect();
@@ -1582,9 +1594,11 @@ export class PdfAnnotatorView extends FileView {
     let y = evt.clientY + 10;
     if (x + pr.width > vw - 8) x = Math.max(8, vw - pr.width - 8);
     if (y + pr.height > vh - 8) y = Math.max(8, evt.clientY - pr.height - 10);
-    pop.style.left = `${x}px`;
-    pop.style.top = `${y}px`;
-    pop.style.visibility = "visible";
+    pop.setCssProps({
+      left: `${x}px`,
+      top: `${y}px`,
+      visibility: "visible",
+    });
 
     const onDocPointer = (e: MouseEvent) => {
       if (!pop.contains(e.target as Node)) this.closeMarkPopover();
@@ -1730,7 +1744,7 @@ export class PdfAnnotatorView extends FileView {
     const colorRow = pop.createDiv({ cls: "lpa-swatches" });
     for (const p of PALETTE) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
-      sw.style.background = p.fill;
+      sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
       sw.toggleClass("is-active", annotationColor(h) === p.fill);
       sw.onclick = () => {
@@ -1750,7 +1764,7 @@ export class PdfAnnotatorView extends FileView {
         this.closeMarkPopover();
       };
     }
-    pop.style.visibility = "hidden";
+    pop.setCssProps({ visibility: "hidden" });
     const vw = doc.documentElement.clientWidth;
     const vh = doc.documentElement.clientHeight;
     const pr = pop.getBoundingClientRect();
@@ -1758,9 +1772,11 @@ export class PdfAnnotatorView extends FileView {
     let y = clientY + 10;
     if (x + pr.width > vw - 8) x = Math.max(8, vw - pr.width - 8);
     if (y + pr.height > vh - 8) y = Math.max(8, clientY - pr.height - 10);
-    pop.style.left = `${x}px`;
-    pop.style.top = `${y}px`;
-    pop.style.visibility = "visible";
+    pop.setCssProps({
+      left: `${x}px`,
+      top: `${y}px`,
+      visibility: "visible",
+    });
     const onDocPointer = (e: MouseEvent) => {
       if (!pop.contains(e.target as Node)) this.closeMarkPopover();
     };
@@ -1803,8 +1819,7 @@ export class PdfAnnotatorView extends FileView {
       const yPct = clamp(0, ((e.clientY - pageRect.top) / Math.max(1, pageRect.height)) * 100, 100);
       const el = pv.noteLayer.querySelector<HTMLElement>(`.lpa-page-tag[data-hl-id="${cssEscape(id)}"]`);
       if (el) {
-        el.style.left = `${xPct}%`;
-        el.style.top = `${yPct}%`;
+        el.setCssProps({ left: `${xPct}%`, top: `${yPct}%` });
       }
       this.scheduleMarginLayout();
     };
@@ -1928,7 +1943,7 @@ export class PdfAnnotatorView extends FileView {
 
   private applyElasticMarginWidth(margin: HTMLElement, width: number): void {
     const rounded = Math.max(0, Math.round(width));
-    margin.style.width = `${rounded}px`;
+    margin.setCssProps({ width: `${rounded}px` });
     margin.style.setProperty("--lpa-margin-width", `${rounded}px`);
     margin.toggleClass("is-collapsed", rounded < 42);
     margin.toggleClass("is-tight", rounded >= 42 && rounded < 92);
@@ -1980,7 +1995,7 @@ export class PdfAnnotatorView extends FileView {
     for (const item of cards) {
       const idealTop = item.anchor.idealY;
       y = Math.max(idealTop, y);
-      item.card.style.top = `${Math.round(y)}px`;
+      item.card.setCssProps({ top: `${Math.round(y)}px` });
       y += item.height + gap;
     }
     const overflow = y - gap - (margin.clientHeight - 8);
@@ -1989,7 +2004,7 @@ export class PdfAnnotatorView extends FileView {
       if (shift > 0) {
         for (const item of cards) {
           const top = Number.parseFloat(item.card.style.top || "0");
-          item.card.style.top = `${Math.round(top - shift)}px`;
+          item.card.setCssProps({ top: `${Math.round(top - shift)}px` });
         }
       }
     }
@@ -2041,10 +2056,10 @@ export class PdfAnnotatorView extends FileView {
 
       if (isTag && !h.isPinned) {
         const len = path.getTotalLength();
-        path.style.strokeDasharray = `${len}`;
-        path.style.strokeDashoffset = `${len}`;
+        path.setAttribute("stroke-dasharray", `${len}`);
+        path.setAttribute("stroke-dashoffset", `${len}`);
         window.requestAnimationFrame(() => {
-          path.style.strokeDashoffset = "0";
+          path.setAttribute("stroke-dashoffset", "0");
         });
       }
     }
@@ -2180,8 +2195,10 @@ export class PdfAnnotatorView extends FileView {
     for (const pv of this.pageViews) {
       this.teardownPageContent(pv);
       const sz = this.pageSizes[pv.index] ?? this.defaultSize;
-      pv.el.style.width = `${Math.floor(sz.w * this.scale)}px`;
-      pv.el.style.height = `${Math.floor(sz.h * this.scale)}px`;
+      pv.el.setCssProps({
+        width: `${Math.floor(sz.w * this.scale)}px`,
+        height: `${Math.floor(sz.h * this.scale)}px`,
+      });
     }
 
     if (anchor) {
@@ -2313,7 +2330,7 @@ class RubberHandle {
     this.markerEl.addClass(`is-${anchor.side}`);
     this.markerEl.addClass("is-visible");
     this.markerEl.style.setProperty("--lpa-accent", accent);
-    this.markerEl.style.height = `${Math.round(anchor.height)}px`;
+    this.markerEl.setCssProps({ height: `${Math.round(anchor.height)}px` });
     this.paint(anchor.x, anchor.y);
   }
 
@@ -2444,13 +2461,14 @@ class RubberHandle {
   }
 
   private paint(x: number, y: number): void {
-    this.markerEl.style.left = `${Math.round(x)}px`;
-    this.markerEl.style.top = `${Math.round(y)}px`;
+    this.markerEl.setCssProps({
+      left: `${Math.round(x)}px`,
+      top: `${Math.round(y)}px`,
+    });
     const width = RUBBER_HANDLE_FEEL.REST_WIDTH + (RUBBER_HANDLE_FEEL.ACTIVE_WIDTH - RUBBER_HANDLE_FEEL.REST_WIDTH) * this.tension;
-    this.markerEl.style.width = `${width.toFixed(2)}px`;
+    this.markerEl.setCssProps({ width: `${width.toFixed(2)}px`, transform: "none" });
     this.markerEl.style.setProperty("--lpa-rubber-tension", this.tension.toFixed(3));
     this.markerEl.style.setProperty("--lpa-rubber-fill", `${(this.tension * 100).toFixed(1)}%`);
-    this.markerEl.style.transform = "none";
   }
 }
 

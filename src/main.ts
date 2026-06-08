@@ -107,7 +107,6 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       state: { file: file.path },
       active: true,
     });
-    this.app.workspace.revealLeaf(leaf);
   }
 
   private async openPdfClickInAnnotator(file: TFile): Promise<void> {
@@ -131,7 +130,6 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
           state: { file: file.path },
           active: true,
         });
-        this.app.workspace.revealLeaf(leaf);
       } finally {
         this.replacingCorePdfView = false;
       }
@@ -156,7 +154,7 @@ class LpaSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h3", { text: "Local PDF Annotator" });
+    new Setting(containerEl).setName("Local PDF Annotator").setHeading();
 
     new Setting(containerEl)
       .setName("Make this the default PDF viewer")
