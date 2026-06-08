@@ -92,7 +92,7 @@ function sanitizePdfJsApi(contents, sourcePath) {
     contents = replaceRequired(
       contents,
       `const worker = eval("require")(this.workerSrc);`,
-      `const worker = require(this.workerSrc);`,
+      `throw new Error("Local PDF Annotator disables pdf.js Node fake-worker fallback.");`,
       "Node fake-worker eval fallback",
       sourcePath
     );
@@ -100,7 +100,7 @@ function sanitizePdfJsApi(contents, sourcePath) {
     contents = replaceRequired(
       contents,
       `const worker=eval("require")(this.workerSrc);`,
-      `const worker=require(this.workerSrc);`,
+      `throw new Error("Local PDF Annotator disables pdf.js Node fake-worker fallback.")`,
       "minified Node fake-worker eval fallback",
       sourcePath
     );
@@ -134,6 +134,98 @@ function sanitizePdfJsApi(contents, sourcePath) {
   for (const forbidden of ["new Function", `Function("`, `Function('`, "eval(", `createElement("script")`]) {
     if (contents.includes(forbidden)) {
       throw new Error(`[build] forbidden pdf.js token still present after patch: ${forbidden}`);
+    }
+  }
+
+  contents = stripPdfJsNodeOnlyAccess(contents, sourcePath);
+
+  return contents;
+}
+
+function replaceOptional(contents, pattern, replacement) {
+  return contents.replace(pattern, replacement);
+}
+
+function stripPdfJsNodeOnlyAccess(contents, sourcePath) {
+  const disabled =
+    `new Error("Local PDF Annotator disables pdf.js Node-only filesystem/network fallback.")`;
+
+  contents = replaceOptional(
+    contents,
+    /;\n\{\n  \(function checkDOMMatrix\(\) \{[\s\S]*?\n  \}\)\(\);\n\}\nconst fetchData/,
+    `;\n{\n}\nconst fetchData`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /const fetchData = function \(url\) \{[\s\S]*?\n\};(?=\nclass NodeFilterFactory)/,
+    `const fetchData = function (url) {
+  return Promise.reject(${disabled});
+};`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /class NodeCanvasFactory extends _base_factory\.BaseCanvasFactory \{[\s\S]*?\n\}\nexports\.NodeCanvasFactory = NodeCanvasFactory;/,
+    `class NodeCanvasFactory extends _base_factory.BaseCanvasFactory {
+  _createCanvas(width, height) {
+    throw ${disabled};
+  }
+}
+exports.NodeCanvasFactory = NodeCanvasFactory;`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /function parseUrl\(sourceUrl\) \{[\s\S]*?\n\}(?=\nclass PDFNodeStream)/,
+    `function parseUrl(sourceUrl) {
+  throw ${disabled};
+}`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /class PDFNodeStreamFullReader extends BaseFullReader \{[\s\S]*?\n\}(?=\nclass PDFNodeStreamRangeReader)/,
+    `class PDFNodeStreamFullReader extends BaseFullReader {
+  constructor() {
+    throw ${disabled};
+  }
+}`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /class PDFNodeStreamRangeReader extends BaseRangeReader \{[\s\S]*?\n\}(?=\nclass PDFNodeStreamFsFullReader)/,
+    `class PDFNodeStreamRangeReader extends BaseRangeReader {
+  constructor() {
+    throw ${disabled};
+  }
+}`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /class PDFNodeStreamFsFullReader extends BaseFullReader \{[\s\S]*?\n\}(?=\nclass PDFNodeStreamFsRangeReader)/,
+    `class PDFNodeStreamFsFullReader extends BaseFullReader {
+  constructor() {
+    throw ${disabled};
+  }
+}`
+  );
+
+  contents = replaceOptional(
+    contents,
+    /class PDFNodeStreamFsRangeReader extends BaseRangeReader \{[\s\S]*?\n\}(?=\n\n\/\*\*\*\/ \}\),|\n\n\/\*\*\*\/\}\),|\n\n\/\*\*\*\/\}\)\;)/,
+    `class PDFNodeStreamFsRangeReader extends BaseRangeReader {
+  constructor() {
+    throw ${disabled};
+  }
+}`
+  );
+
+  for (const forbidden of [`require("fs")`, `require("http")`, `require("https")`, `require("url")`, `require("canvas")`]) {
+    if (contents.includes(forbidden)) {
+      throw new Error(`[build] forbidden pdf.js Node fallback token still present after patch: ${forbidden} in ${sourcePath}`);
     }
   }
 

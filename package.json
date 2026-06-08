@@ -1,6 +1,6 @@
 {
   "name": "local-pdf-annotator",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Local Obsidian PDF reader with persistent text-highlight annotations. Bundles its own pinned pdf.js + worker to structurally avoid version-mismatch conflicts with Obsidian's internal pdf.js.",
   "scripts": {
