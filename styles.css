@@ -7,28 +7,51 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+  position: relative;
   background: var(--background-secondary);
 }
 
 .lpa-toolbar {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 22;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
+  gap: 5px;
+  padding: 3px;
+  border: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background-primary) 88%, transparent);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(8px);
   user-select: none;
 }
-.lpa-toolbar .lpa-title {
-  font-weight: 600;
-  margin-right: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.lpa-toolbar .lpa-title,
+.lpa-toolbar .lpa-zoom-label,
+.lpa-toolbar .lpa-status-dot,
+.lpa-toolbar .lpa-annotation-count {
+  display: none;
 }
 .lpa-toolbar button {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0.5px solid transparent;
   cursor: pointer;
+}
+.lpa-toolbar button:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.lpa-toolbar button.is-active {
+  color: var(--text-normal);
+  border-color: color-mix(in srgb, var(--interactive-accent) 42%, transparent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
 }
 .lpa-zoom-label {
   min-width: 48px;
@@ -40,6 +63,193 @@
   opacity: 0.85;
   margin-left: 4px;
   white-space: nowrap;
+}
+.lpa-annotation-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.lpa-annotation-count:hover {
+  color: var(--text-normal);
+}
+
+.lpa-roll {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  max-height: 156px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  position: relative;
+}
+.lpa-roll.is-hidden {
+  display: none;
+}
+.lpa-roll-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 174px 5px 10px;
+}
+.lpa-roll-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.lpa-roll-meta {
+  min-width: 54px;
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.lpa-roll-search {
+  flex: 1 1 auto;
+  min-width: 160px;
+  height: 24px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.lpa-roll-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 5px;
+  line-height: 1;
+}
+.lpa-roll-list {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 12px 12px;
+  overscroll-behavior-x: contain;
+  scroll-behavior: auto;
+  scrollbar-width: thin;
+  scrollbar-color:
+    color-mix(in srgb, var(--text-muted) 42%, transparent)
+    color-mix(in srgb, var(--background-modifier-border) 42%, transparent);
+  mask-image: linear-gradient(90deg, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+}
+.lpa-roll-list::-webkit-scrollbar {
+  display: block;
+  height: 9px;
+}
+.lpa-roll-list::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--background-modifier-border) 36%, transparent);
+  border-radius: 999px;
+}
+.lpa-roll-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 40%, transparent);
+  border: 2px solid var(--background-primary);
+  border-radius: 999px;
+}
+.lpa-roll-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 62%, transparent);
+}
+.lpa-roll-empty {
+  align-self: center;
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 12px 2px;
+}
+.lpa-roll-item {
+  flex: 0 0 clamp(178px, 22vw, 248px);
+  min-width: 0;
+  height: 76px;
+  padding: 6px 10px 7px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 70%, transparent);
+  border-right: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+  border-radius: 0;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--background-primary) 96%, var(--lpa-accent, transparent)),
+    var(--background-primary)
+  );
+  cursor: pointer;
+  overflow: hidden;
+  transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.lpa-roll-item:first-child {
+  border-top-left-radius: 5px;
+  border-bottom-left-radius: 5px;
+}
+.lpa-roll-item:last-child {
+  border-top-right-radius: 5px;
+  border-bottom-right-radius: 5px;
+}
+.lpa-roll-item:hover,
+.lpa-roll-item.is-hover,
+.lpa-roll-item.is-active {
+  background: color-mix(in srgb, var(--background-secondary) 82%, var(--lpa-accent, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 26%, transparent);
+}
+.lpa-roll-item.is-active {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 42%, transparent),
+    inset 0 -2px 0 color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 64%, transparent);
+}
+.lpa-roll-item-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-bottom: 4px;
+}
+.lpa-roll-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--lpa-accent, currentColor);
+  flex: 0 0 auto;
+}
+.lpa-roll-page {
+  font-family: var(--font-monospace);
+  font-size: 9px;
+  color: var(--text-faint);
+}
+.lpa-roll-kind,
+.lpa-roll-pin {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: var(--text-faint);
+}
+.lpa-roll-pin {
+  margin-left: auto;
+  color: var(--interactive-accent);
+}
+.lpa-roll-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.28;
+  max-height: 29px;
+  overflow: hidden;
+}
+.lpa-roll-source {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  color: var(--text-faint);
+  font-size: 9.5px;
+  line-height: 1.22;
+  max-height: 24px;
+  overflow: hidden;
 }
 
 /* The "pen": a STYLE row + a COLOR row (two small additive axes, no grid). */
@@ -81,7 +291,7 @@
   padding-bottom: 2px;
 }
 .lpa-style-sample--highlight {
-  background: var(--lpa-fill, rgba(232, 194, 76, 0.45));
+  background: var(--lpa-fill, #FBF719);
   border-radius: 2px;
   padding: 0 1px 2px;
 }
@@ -121,23 +331,73 @@
 }
 
 .lpa-pages {
-  flex: 1 1 auto;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   min-width: 0;
   overflow: auto;
-  padding: 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  align-items: safe center;
   gap: 16px;
   user-select: text;
   -webkit-user-select: text;
+  z-index: 1;
+}
+.lpa-root.is-tag-mode .lpa-pages,
+.lpa-root.is-tag-mode .lpa-page {
+  cursor: crosshair;
 }
 
 .lpa-body {
   flex: 1 1 auto;
   min-height: 0;
-  display: flex;
   overflow: hidden;
+  position: relative;
+}
+.lpa-margin {
+  --lpa-card-max: 156px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  z-index: 6;
+  transition: width 180ms ease;
+}
+.lpa-margin-left {
+  left: 0;
+}
+.lpa-margin-right {
+  right: 0;
+}
+.lpa-margin.is-collapsed {
+  border-color: transparent;
+}
+.lpa-margin.is-compact {
+  --lpa-card-max: 132px;
+}
+.lpa-margin.is-roomy {
+  --lpa-card-max: 230px;
+}
+.lpa-margin.is-spacious {
+  --lpa-card-max: 286px;
+}
+.lpa-body.is-scrolling .lpa-margin {
+  transition: none;
+}
+.lpa-connection-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  overflow: visible;
 }
 
 /* One page = a positioned box sized to the current viewport. */
@@ -149,6 +409,9 @@
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
   user-select: text;
   -webkit-user-select: text;
+  /* Confine the highlight layer's multiply blend to this page: it blends with
+     the canvas (rasterised glyphs + white paper) below it and nothing else. */
+  isolation: isolate;
   /* width/height set inline per render from the viewport */
 }
 .lpa-page > canvas {
@@ -161,7 +424,12 @@
   -webkit-user-select: none;
 }
 
-/* Highlights sit above the canvas, below the text layer. */
+/* Highlights sit above the canvas, below the text layer. The whole layer is
+   composited onto the page with `multiply`, so the ink reads as if it were laid
+   down BEHIND the text: black glyphs (× ink → black) stay crisp and fully black,
+   while the white paper (× ink → ink) takes the marker colour. No translucent
+   veil ever darkens or washes out the glyphs. The text layer (z-index 2) and
+   JS hit-testing are unaffected — only the paint compositing changes. */
 .lpa-highlight-layer {
   position: absolute;
   top: 0;
@@ -170,30 +438,85 @@
   bottom: 0;
   pointer-events: none; /* individual highlight rects re-enable it */
   z-index: 1;
+  mix-blend-mode: multiply;
   user-select: none;
   -webkit-user-select: none;
 }
 .lpa-highlight {
+  /* Fallbacks; the renderer overrides these per-mark from the mark's own color.
+     All three are the SAME hue at rising alpha — emphasis never shifts hue. */
+  --lpa-hl-color-active: rgba(251, 247, 25, 0.74);
+  --lpa-hl-color-active-gloss: rgba(251, 247, 25, 0.56);
+  --lpa-hl-color-active-bridge: rgba(251, 247, 25, 0.37);
   position: absolute;
   /* Visual only: clicks are hit-tested in JS so highlights never block text
      selection (the text layer stays on top). */
   pointer-events: none;
-  background: var(--lpa-hl-color, rgba(255, 214, 0, 0.28));
+  background: var(--lpa-hl-color, rgba(251, 247, 25, 0.52));
   border-radius: 2px;
   opacity: 1;
-  outline: 2px solid transparent;
-  transition: opacity 80ms ease, outline-color 80ms ease, box-shadow 80ms ease;
+  outline: none;
+  box-shadow: none;
+  /* Gentle + responsive. A solid → solid colour fade is smoothly interpolable
+     (a gradient swap would flash), so engaging a passage just deepens the ink. */
+  transition: background-color 140ms ease;
 }
-.lpa-root.has-active-highlight .lpa-highlight:not(.is-active) {
-  opacity: 0.62;
-}
-.lpa-highlight.is-hover {
-  outline-color: rgba(80, 120, 180, 0.45);
-}
+/* Hover and active are ONE visual language: the same marker hue, simply more
+   present (denser ink over the white paper). "Selected" is the persistent form
+   of "hover" — no separate grey/blue/system selection colour, no brightness or
+   saturation filter, no outline ring. */
+.lpa-highlight.is-hover,
 .lpa-highlight.is-active {
-  opacity: 1;
-  outline-color: rgba(80, 120, 180, 0.72);
-  box-shadow: 0 0 0 2px rgba(80, 120, 180, 0.22);
+  background: var(--lpa-hl-color-active);
+}
+/* Run shape: round only the OUTER corners of a multi-line passage and square the
+   inner edges, so the lines read as one continuous chunk rather than a stack of
+   pills. Applies whenever the passage is engaged (hover or active alike). */
+.lpa-highlight.is-hover.lpa-run-single,
+.lpa-highlight.is-active.lpa-run-single {
+  border-radius: 4px;
+}
+.lpa-highlight.is-hover.lpa-run-first,
+.lpa-highlight.is-active.lpa-run-first {
+  border-radius: 4px 4px 2px 2px;
+}
+.lpa-highlight.is-hover.lpa-run-middle,
+.lpa-highlight.is-active.lpa-run-middle {
+  border-radius: 2px;
+}
+.lpa-highlight.is-hover.lpa-run-last,
+.lpa-highlight.is-active.lpa-run-last {
+  border-radius: 2px 2px 4px 4px;
+}
+/* Same-hue continuity bridges fill the inter-line leading so a multi-line
+   passage is one elegant entity — no outlines, rings, or per-line boxes. */
+.lpa-highlight.is-hover.lpa-run-first:not(.lpa-run-single)::before,
+.lpa-highlight.is-active.lpa-run-first:not(.lpa-run-single)::before,
+.lpa-highlight.is-hover.lpa-run-middle::before,
+.lpa-highlight.is-active.lpa-run-middle::before,
+.lpa-highlight.is-hover.lpa-run-last::before,
+.lpa-highlight.is-active.lpa-run-last::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  background: var(--lpa-hl-color-active-bridge);
+}
+.lpa-highlight.is-hover.lpa-run-first:not(.lpa-run-single)::before,
+.lpa-highlight.is-active.lpa-run-first:not(.lpa-run-single)::before {
+  bottom: -3px;
+  height: 4px;
+}
+.lpa-highlight.is-hover.lpa-run-middle::before,
+.lpa-highlight.is-active.lpa-run-middle::before {
+  top: -3px;
+  bottom: -3px;
+}
+.lpa-highlight.is-hover.lpa-run-last::before,
+.lpa-highlight.is-active.lpa-run-last::before {
+  top: -3px;
+  height: 4px;
 }
 .lpa-highlight.lpa-flash {
   animation: lpa-flash 1.1s ease;
@@ -201,12 +524,70 @@
 @keyframes lpa-flash {
   0%,
   100% {
-    outline-color: transparent;
+    filter: none;
   }
   30% {
-    outline-color: var(--interactive-accent);
-    box-shadow: 0 0 0 3px var(--interactive-accent);
+    filter: saturate(1.15) brightness(0.96);
   }
+}
+
+.lpa-note-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.lpa-page-tag {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100px;
+  min-height: 18px;
+  padding: 2px 6px;
+  border: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 80%, transparent);
+  border-left: 2px solid var(--lpa-accent, var(--interactive-accent));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--background-primary) 86%, transparent);
+  color: var(--text-faint);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  opacity: 0.72;
+  transition: opacity 250ms ease, border-color 250ms ease, background-color 250ms ease, box-shadow 250ms ease;
+  cursor: pointer;
+}
+.lpa-page-tag:hover,
+.lpa-page-tag.is-hover,
+.lpa-page-tag.is-active,
+.lpa-page-tag.is-pinned {
+  opacity: 1;
+  border-color: var(--background-modifier-border-hover, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.lpa-page-tag.is-active,
+.lpa-page-tag.is-pinned {
+  border-left-color: var(--interactive-accent);
+}
+.lpa-tag-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--lpa-accent, currentColor);
+  flex: 0 0 auto;
+}
+.lpa-tag-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  line-height: 1.2;
+  font-style: italic;
+  color: var(--text-muted);
 }
 
 /* ===== Decorative (non-fill) mark styles ===================================
@@ -248,16 +629,16 @@
   border-radius: 3px;
 }
 
-/* Emphasis for decorative marks: a quiet ink-tinted wash instead of the fill's
-   outline ring, so an active underline doesn't masquerade as a box. */
-.lpa-highlight.lpa-mark.is-hover {
-  outline-color: transparent;
-  background: color-mix(in srgb, var(--lpa-ink, transparent) 9%, transparent);
-}
+/* Emphasis for decorative marks: one language for hover and active alike — a
+   restrained same-hue wash (the stroke keeps its own ink), never an outline
+   ring, so an engaged underline doesn't masquerade as a box. The wash sits in
+   the multiply layer, so it tints the paper behind the glyphs without dimming
+   them. */
+.lpa-highlight.lpa-mark.is-hover,
 .lpa-highlight.lpa-mark.is-active {
   outline-color: transparent;
   box-shadow: none;
-  background: color-mix(in srgb, var(--lpa-ink, transparent) 15%, transparent);
+  background: var(--lpa-hl-color-active-gloss);
 }
 
 /* ===== Mark editor popover (style + color + actions) ======================= */
@@ -289,6 +670,148 @@
 }
 .lpa-popover-actions .lpa-danger {
   color: var(--text-error);
+}
+
+/* ===== Selection action handle + thin popup ================================= */
+.lpa-rubber-handle {
+  --lpa-rubber-tension: 0;
+  --lpa-rubber-fill: 0%;
+  position: fixed;
+  z-index: 112;
+  width: 5px;
+  min-height: 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 24%, transparent);
+  box-shadow:
+    0 0 0 0 color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 18%, transparent),
+    0 1px 4px rgba(0, 0, 0, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: left center;
+  transition:
+    opacity 140ms ease,
+    width 120ms ease,
+    transform 170ms cubic-bezier(0.2, 0.8, 0.2, 1.18),
+    background-color 140ms ease,
+    box-shadow 170ms ease;
+}
+.lpa-rubber-handle.is-left {
+  transform-origin: right center;
+}
+.lpa-rubber-handle.is-visible {
+  opacity: calc(0.34 + (var(--lpa-rubber-tension) * 0.56));
+  box-shadow:
+    0 0 0 calc(var(--lpa-rubber-tension) * 4px) color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 14%, transparent),
+    0 1px 5px rgba(0, 0, 0, 0.16);
+}
+.lpa-rubber-handle::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--lpa-rubber-fill);
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 45%),
+    color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 88%, transparent);
+  transition: height 70ms linear;
+}
+.lpa-rubber-handle::after {
+  content: "";
+  position: absolute;
+  inset: -5px -8px;
+  border-radius: 999px;
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 18%, transparent),
+    transparent 68%
+  );
+  opacity: var(--lpa-rubber-tension);
+  pointer-events: none;
+}
+.lpa-rubber-handle.is-snapped {
+  animation: lpa-rubber-snap 260ms cubic-bezier(0.2, 0.9, 0.18, 1);
+}
+@keyframes lpa-rubber-snap {
+  0% { filter: none; }
+  34% { filter: saturate(1.18); }
+  100% { filter: none; }
+}
+
+.lpa-selection-popover {
+  --lpa-pop-in-x: -7px;
+  position: fixed;
+  z-index: 113;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  max-height: 30px;
+  padding: 3px 5px;
+  border: 0.5px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 26%, var(--background-modifier-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transform-origin: left center;
+  animation: lpa-selection-pop 280ms cubic-bezier(0.17, 0.86, 0.24, 1.18) forwards;
+  user-select: none;
+}
+.lpa-selection-popover.is-left {
+  --lpa-pop-in-x: 7px;
+  transform-origin: right center;
+}
+@keyframes lpa-selection-pop {
+  0% {
+    opacity: 0;
+    transform: translateX(var(--lpa-pop-in-x)) scaleX(0.84);
+  }
+  72% {
+    opacity: 1;
+    transform: translateX(0) scaleX(1.035);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scaleX(1);
+  }
+}
+.lpa-selection-swatches {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-right: 4px;
+  border-right: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+}
+.lpa-selection-popover .lpa-swatch {
+  width: 13px;
+  height: 13px;
+  border-width: 1.5px;
+}
+.lpa-selection-action {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 0.5px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lpa-selection-action:hover {
+  color: var(--text-normal);
+  border-color: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 34%, transparent);
+  background: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 9%, transparent);
+}
+.lpa-selection-action-primary {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 13%, transparent);
+}
+.lpa-selection-action-quiet {
+  color: var(--text-faint);
 }
 
 /* ===== pdf.js text layer (selection) =======================================
@@ -351,84 +874,304 @@
   text-align: left;
 }
 
-.lpa-sidebar {
-  flex: 0 0 320px;
-  min-width: 260px;
-  max-width: 380px;
-  border-left: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
+.lpa-margin-card {
+  position: absolute;
+  width: min(calc(100% - 14px), var(--lpa-card-max));
+  max-height: 56px;
+  overflow: hidden;
+  padding: 5px 7px 6px 8px;
+  border: 0.5px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 22%, var(--background-modifier-border));
+  border-left: 2px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 72%, transparent);
+  border-radius: 3px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 42%),
+    color-mix(in srgb, var(--lpa-sticker-bg, var(--background-primary)) 72%, var(--background-primary));
+  color: var(--text-normal);
+  box-sizing: border-box;
+  opacity: 0.94;
+  pointer-events: auto;
+  cursor: pointer;
+  transition:
+    top 220ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    width 180ms ease,
+    max-height 400ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    background-color 250ms ease,
+    border-color 250ms ease,
+    opacity 250ms ease,
+    box-shadow 250ms ease;
+}
+.lpa-margin-left .lpa-margin-card {
+  left: auto;
+  right: 7px;
+}
+.lpa-margin-right .lpa-margin-card {
+  left: 7px;
+  right: auto;
+}
+.lpa-margin.is-collapsed .lpa-margin-card {
+  opacity: 0;
+  pointer-events: none;
+}
+.lpa-margin.is-collapsed .lpa-margin-card--tag {
+  animation: none;
+}
+.lpa-margin.is-tight .lpa-margin-card {
+  width: calc(100% - 6px);
+  max-height: 50px;
+  padding: 4px 5px 5px;
+  border-radius: 3px;
+}
+.lpa-margin-left.is-tight .lpa-margin-card {
+  right: 3px;
+}
+.lpa-margin-right.is-tight .lpa-margin-card {
+  left: 3px;
+}
+.lpa-margin.is-compact .lpa-margin-card {
+  width: min(calc(100% - 10px), var(--lpa-card-max));
+  max-height: 54px;
+  padding: 5px 6px;
+}
+.lpa-margin-left.is-compact .lpa-margin-card {
+  right: 5px;
+}
+.lpa-margin-right.is-compact .lpa-margin-card {
+  left: 5px;
+}
+.lpa-margin.is-roomy .lpa-margin-card {
+  max-height: 66px;
+  padding: 6px 8px 7px;
+}
+.lpa-margin.is-spacious .lpa-margin-card {
+  max-height: 78px;
+}
+.lpa-margin-card--tag {
+  opacity: 0;
+  animation: lpa-card-materialize 250ms ease 100ms forwards;
+}
+.lpa-margin-card.is-hover,
+.lpa-margin-card.is-active,
+.lpa-margin-card.is-pinned,
+.lpa-margin-card:hover {
+  max-height: 260px;
+  opacity: 1;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 45%),
+    color-mix(in srgb, var(--lpa-sticker-bg-strong, var(--lpa-sticker-bg, var(--background-primary))) 76%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 48%, var(--background-modifier-border-hover, var(--background-modifier-border)));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 22%, transparent),
+    0 2px 7px rgba(0, 0, 0, 0.12);
+}
+.lpa-margin-card.is-pinned {
+  border-left-color: var(--interactive-accent);
+}
+.lpa-margin.is-tight .lpa-margin-card.is-hover,
+.lpa-margin.is-tight .lpa-margin-card.is-active,
+.lpa-margin.is-tight .lpa-margin-card.is-pinned,
+.lpa-margin.is-tight .lpa-margin-card:hover {
+  max-height: 230px;
+}
+.lpa-margin.is-compact .lpa-margin-card.is-hover,
+.lpa-margin.is-compact .lpa-margin-card.is-active,
+.lpa-margin.is-compact .lpa-margin-card.is-pinned,
+.lpa-margin.is-compact .lpa-margin-card:hover {
+  max-height: 250px;
+}
+.lpa-margin.is-roomy .lpa-margin-card.is-hover,
+.lpa-margin.is-roomy .lpa-margin-card.is-active,
+.lpa-margin.is-roomy .lpa-margin-card.is-pinned,
+.lpa-margin.is-roomy .lpa-margin-card:hover,
+.lpa-margin.is-spacious .lpa-margin-card.is-hover,
+.lpa-margin.is-spacious .lpa-margin-card.is-active,
+.lpa-margin.is-spacious .lpa-margin-card.is-pinned,
+.lpa-margin.is-spacious .lpa-margin-card:hover {
+  max-height: 280px;
+}
+.lpa-body.is-scrolling .lpa-margin-card {
+  transition:
+    width 120ms ease,
+    max-height 160ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease,
+    box-shadow 120ms ease;
+}
+.lpa-card-flash {
+  animation: lpa-card-flash 1s ease;
+}
+@keyframes lpa-card-materialize {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lpa-card-flash {
+  30% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+  }
+}
+.lpa-margin-card-head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-height: 12px;
+  margin-bottom: 3px;
+}
+.lpa-margin-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--lpa-accent, currentColor);
+  flex: 0 0 auto;
+}
+.lpa-margin-page {
+  font-family: var(--font-monospace);
+  font-size: 8.8px;
+  line-height: 1;
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--lpa-accent, var(--interactive-accent)));
+}
+.lpa-pin-btn {
+  margin-left: auto;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--text-muted) 76%, var(--lpa-accent, var(--interactive-accent)));
+  opacity: 0;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity 200ms ease, color 200ms ease;
+}
+.lpa-margin-card:hover .lpa-pin-btn,
+.lpa-margin-card.is-hover .lpa-pin-btn,
+.lpa-margin-card.is-active .lpa-pin-btn {
+  opacity: 0.4;
+}
+.lpa-margin-card.is-pinned .lpa-pin-btn {
+  opacity: 0.85;
+  color: var(--interactive-accent);
+}
+.lpa-margin-note,
+.lpa-margin-cjk {
+  display: block;
+  width: 100%;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  resize: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: 10.8px;
+  line-height: 1.28;
   overflow: hidden;
 }
-.lpa-sidebar-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--background-modifier-border);
+.lpa-margin.is-tight .lpa-margin-note {
+  min-height: 18px;
+  font-size: 9.6px;
+  line-height: 1.18;
 }
-.lpa-sidebar-title {
-  font-weight: 600;
-  color: var(--text-normal);
+.lpa-margin.is-compact .lpa-margin-note {
+  min-height: 17px;
+  font-size: 10.2px;
+  line-height: 1.22;
 }
-.lpa-sidebar-count {
-  margin-left: auto;
-  min-width: 24px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 12px;
-  text-align: center;
-  color: var(--text-muted);
-  background: var(--background-secondary);
+.lpa-margin.is-roomy .lpa-margin-note {
+  min-height: 30px;
 }
-.lpa-annotation-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 10px;
+.lpa-margin.is-spacious .lpa-margin-note {
+  min-height: 42px;
 }
-.lpa-empty-annotations {
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.4;
-  padding: 8px 2px;
+.lpa-margin-note:focus,
+.lpa-margin-cjk:focus {
+  outline: none;
+  box-shadow: none;
 }
-.lpa-annotation-item {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 8px;
-  margin-bottom: 8px;
-  background: var(--background-secondary);
-  transition: border-color 80ms ease, background-color 80ms ease, box-shadow 80ms ease;
+.lpa-margin-note::placeholder,
+.lpa-margin-cjk::placeholder {
+  color: color-mix(in srgb, var(--text-faint) 78%, var(--lpa-accent, var(--interactive-accent)));
 }
-.lpa-annotation-item.is-hover {
-  border-color: rgba(80, 120, 180, 0.45);
+.lpa-margin-source {
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 0.5px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 18%, transparent);
+  color: color-mix(in srgb, var(--text-muted) 78%, var(--lpa-accent, var(--interactive-accent)));
+  font-size: 9.2px;
+  line-height: 1.25;
+  max-height: 24px;
+  overflow: hidden;
 }
-.lpa-annotation-item.is-active {
-  border-color: rgba(80, 120, 180, 0.72);
-  background: var(--background-secondary-alt, var(--background-secondary));
-  box-shadow: inset 3px 0 0 rgba(80, 120, 180, 0.75);
+.lpa-margin.is-tight .lpa-margin-source,
+.lpa-margin.is-compact .lpa-margin-source {
+  max-height: 18px;
 }
-.lpa-annotation-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+.lpa-margin.is-roomy .lpa-margin-source {
+  max-height: 34px;
 }
-.lpa-annotation-page,
-.lpa-annotation-actions button {
-  font-size: 12px;
-  line-height: 1.2;
-  padding: 3px 7px;
-  cursor: pointer;
+.lpa-margin.is-spacious .lpa-margin-source {
+  max-height: 46px;
 }
-.lpa-annotation-color {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px var(--background-modifier-border);
+.lpa-margin-card.is-hover .lpa-margin-source,
+.lpa-margin-card.is-active .lpa-margin-source,
+.lpa-margin-card.is-pinned .lpa-margin-source,
+.lpa-margin-card:hover .lpa-margin-source {
+  max-height: 78px;
+}
+.lpa-margin-cjk {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 0.5px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 20%, transparent);
+  opacity: 0;
+  max-height: 0;
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--lpa-accent, var(--interactive-accent)));
+  transition: max-height 400ms cubic-bezier(0.25, 0.1, 0.25, 1), opacity 300ms ease 50ms;
+}
+.lpa-margin.is-tight .lpa-margin-cjk {
+  display: block;
+}
+.lpa-margin-card.is-hover .lpa-margin-cjk,
+.lpa-margin-card.is-active .lpa-margin-cjk,
+.lpa-margin-card.is-pinned .lpa-margin-cjk,
+.lpa-margin-card:hover .lpa-margin-cjk {
+  opacity: 1;
+  max-height: 60px;
+}
+.lpa-connection-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 0.6px;
+  opacity: 0.18;
+  transition: opacity 300ms ease, stroke-width 300ms ease, stroke-dashoffset 300ms ease-out;
+}
+.lpa-body.is-scrolling .lpa-connection-line,
+.lpa-body.is-scrolling .lpa-connection-dot {
+  transition: none;
+}
+.lpa-connection-line.is-hover {
+  stroke-width: 1.2px;
+  opacity: 0.5;
+}
+.lpa-connection-line.is-pinned {
+  stroke-width: 0.9px;
+  opacity: 0.35;
+}
+.lpa-connection-line--tag {
+  stroke-width: 0.8px;
+  opacity: 0.4;
+}
+.lpa-connection-line--tag.is-pinned {
+  stroke-dasharray: 3 3;
+}
+.lpa-connection-dot {
+  opacity: 0.18;
+  transition: opacity 300ms ease, r 300ms ease;
+}
+.lpa-connection-dot.is-hover {
+  opacity: 0.5;
+}
+.lpa-connection-dot.is-pinned {
+  opacity: 0.35;
 }
 /* Style-aware chip: encodes both color and style at a glance. */
 .lpa-annotation-color.lpa-mark-chip {

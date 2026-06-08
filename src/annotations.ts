@@ -61,12 +61,19 @@ export function markStyleOf(h: { style?: string } | null | undefined): MarkStyle
 
 export interface Highlight {
   id: string;
+  type?: "highlight" | "tag"; // absent on old sidecars => text highlight
   page: number; // 0-based page index
   color: string; // rgba/hex — the COLOR/meaning axis (a palette `fill` value)
   style?: MarkStyle; // the STYLE axis; absent ⇒ "highlight" (backward compatible)
   text: string; // selected / quoted text
   note?: string; // user comment (carried over from legacy import)
+  noteContentCJK?: string; // optional secondary annotation
   rects: PdfRect[]; // one rect per visual line
+  tagX?: number; // percentage of page width, for page-note tags
+  tagY?: number; // percentage of page height, for page-note tags
+  tagColor?: string; // optional tag color; falls back to color
+  isPinned?: boolean; // whether the margin card stays expanded / visible
+  marginSide?: "left" | "right" | "auto"; // explicit override, otherwise source-based
   /** Quote context, kept for robustness / future re-anchoring. */
   context?: { prefix?: string; suffix?: string };
   created: string; // ISO timestamp
@@ -81,25 +88,31 @@ export interface AnnotationDoc {
 }
 
 /**
- * The COLOR/meaning palette. Restrained, muted hues — legible over body text,
- * not neon. `fill` is the stored color (semi-transparent, used as a highlight
- * wash; painted alpha is additionally capped at render time). `ink` is a
- * near-opaque, slightly darker version used for line styles (underline / dashed
- * / strike / box), which need to read crisply as a thin stroke.
+ * The COLOR/meaning palette. Fills should read like real marker/pen colors,
+ * while the painted alpha is capped in the renderer so text remains legible.
+ * `ink` is a near-opaque darker version used for line styles.
  */
 export interface PaletteEntry {
   name: string;
   fill: string; // stored on the mark as `color`
   ink: string; // derived stroke color for line/box styles
   emoji: string;
+  cardFill?: string; // optional calmer tint for margin cards
+  highlightAlpha?: number; // optional painted alpha for marker-like fills
 }
 
 export const PALETTE: PaletteEntry[] = [
-  { name: "yellow", fill: "rgba(232, 194, 76, 0.42)", ink: "rgba(166, 124, 12, 0.95)", emoji: "🟨" },
-  { name: "green", fill: "rgba(124, 178, 122, 0.42)", ink: "rgba(58, 122, 70, 0.95)", emoji: "🟩" },
-  { name: "blue", fill: "rgba(120, 160, 208, 0.42)", ink: "rgba(52, 104, 168, 0.95)", emoji: "🟦" },
-  { name: "pink", fill: "rgba(206, 138, 168, 0.44)", ink: "rgba(160, 70, 112, 0.95)", emoji: "🟪" },
-  { name: "red", fill: "rgba(202, 110, 100, 0.44)", ink: "rgba(168, 60, 52, 0.95)", emoji: "🟥" },
+  {
+    name: "yellow",
+    fill: "#FBF719",
+    ink: "rgba(190, 135, 0, 0.96)",
+    emoji: "🟨",
+    cardFill: "rgba(255, 224, 46, 0.52)",
+    highlightAlpha: 0.52,
+  },
+  { name: "blue", fill: "rgba(72, 158, 255, 0.42)", ink: "rgba(28, 104, 196, 0.96)", emoji: "🟦" },
+  { name: "pink", fill: "rgba(255, 76, 174, 0.46)", ink: "rgba(202, 32, 122, 0.96)", emoji: "🟪" },
+  { name: "red", fill: "rgba(246, 94, 82, 0.44)", ink: "rgba(188, 54, 45, 0.96)", emoji: "🟥" },
 ];
 
 /** name → fill, kept for any code that wants the simple map. */
@@ -109,13 +122,16 @@ export const HL_COLORS: Record<string, string> = Object.fromEntries(
 export const DEFAULT_COLOR = PALETTE[0].fill;
 
 /**
- * Old (pre-refinement) saturated fills → current palette name. Lets legacy
- * marks render with the calmer palette WITHOUT rewriting the sidecar: we never
+ * Old/pre-refinement fills → current palette name. Lets legacy marks render
+ * with the current picker palette WITHOUT rewriting the sidecar: we never
  * mutate the stored string, we only resolve it at paint time.
  */
 const LEGACY_FILL_TO_NAME: Record<string, string> = {
   "rgba(255, 214, 0, 0.40)": "yellow",
-  "rgba(106, 217, 126, 0.42)": "green",
+  "rgba(232, 194, 76, 0.42)": "yellow",
+  "rgba(255, 224, 46, 0.52)": "yellow",
+  "rgba(106, 217, 126, 0.42)": "blue",
+  "rgba(124, 178, 122, 0.42)": "blue",
   "rgba(90, 170, 255, 0.40)": "blue",
   "rgba(255, 130, 200, 0.42)": "pink",
   "rgba(255, 110, 110, 0.42)": "red",
@@ -175,12 +191,18 @@ export function serializeAnnotations(doc: AnnotationDoc, pdfBasename: string): s
     lines.push("_No highlights yet._");
   } else {
     for (const h of ordered) {
-      const text = h.text.replace(/\s+/g, " ").trim();
+      const isTag = h.type === "tag";
+      const text = (h.note || h.text || "Page note").replace(/\s+/g, " ").trim();
       const short = text.length > 220 ? text.slice(0, 217) + "…" : text;
       const st = markStyleOf(h);
-      const styleTag = st === "highlight" ? "" : ` _(${MARK_STYLE_LABELS[st].toLowerCase()})_`;
-      let line = `- **p.${h.page + 1}** ${colorEmoji(h.color)}${styleTag} ^${h.id} — "${short}"`;
-      if (h.note && h.note.trim()) line += `\n  - 📝 ${h.note.replace(/\s+/g, " ").trim()}`;
+      const styleTag = isTag
+        ? " _(tag)_"
+        : st === "highlight"
+          ? ""
+          : ` _(${MARK_STYLE_LABELS[st].toLowerCase()})_`;
+      let line = `- **p.${h.page + 1}** ${colorEmoji(h.tagColor ?? h.color)}${styleTag} ^${h.id} — "${short}"`;
+      if (!isTag && h.note && h.note.trim()) line += `\n  - 📝 ${h.note.replace(/\s+/g, " ").trim()}`;
+      if (h.noteContentCJK && h.noteContentCJK.trim()) line += `\n  - ${h.noteContentCJK.replace(/\s+/g, " ").trim()}`;
       lines.push(line);
     }
   }

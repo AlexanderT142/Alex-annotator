@@ -4,9 +4,7 @@
  * Triggers (all public, documented API):
  *   - file-menu "Annotate" item on .pdf files
  *   - command "Open current PDF in annotator"
- *   - OPTIONAL (opt-in setting): register as the default handler for the "pdf"
- *     extension via registerExtensions(["pdf"], VIEW_TYPE). Off by default —
- *     see the README/settings note on why and the unload caveat.
+ *   - file-open bridge: ordinary .pdf clicks are redirected into this view
  */
 import { Plugin, TFile, WorkspaceLeaf, Notice, PluginSettingTab, Setting } from "obsidian";
 import { PdfAnnotatorView, VIEW_TYPE_PDF_ANNOTATOR } from "./view";
@@ -18,11 +16,12 @@ interface LpaSettings {
 }
 
 const DEFAULT_SETTINGS: LpaSettings = {
-  registerAsDefaultPdfHandler: false,
+  registerAsDefaultPdfHandler: true,
 };
 
 export default class LocalPdfAnnotatorPlugin extends Plugin {
   settings!: LpaSettings;
+  private replacingCorePdfView = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -77,16 +76,16 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       },
     });
 
-    // Trigger 3 (opt-in): become the default handler for "pdf".
-    if (this.settings.registerAsDefaultPdfHandler) {
-      try {
-        this.registerExtensions(["pdf"], VIEW_TYPE_PDF_ANNOTATOR);
-        console.log(`${LOG_TAG} registered as default handler for .pdf (overrides core viewer)`);
-      } catch (e: any) {
-        console.warn(`${LOG_TAG} could not register .pdf handler; using menu/command only`, e);
-        new Notice("Local PDF Annotator: couldn't override the core PDF handler; use the menu/command.");
-      }
-    }
+    // Trigger 3: ordinary file clicks. Obsidian's core PDF view owns the "pdf"
+    // extension, so registerExtensions cannot override it safely. Instead, use
+    // the public file-open event and replace the active core PDF leaf.
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file instanceof TFile && file.extension === "pdf") {
+          void this.openPdfClickInAnnotator(file);
+        }
+      })
+    );
 
     this.addSettingTab(new LpaSettingTab(this));
 
@@ -111,6 +110,35 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  private async openPdfClickInAnnotator(file: TFile): Promise<void> {
+    if (!this.settings.registerAsDefaultPdfHandler || this.replacingCorePdfView) return;
+    for (const delayMs of [-1, 0, 16, 64]) {
+      if (delayMs < 0) {
+        await Promise.resolve();
+      } else {
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      }
+
+      const leaf = this.app.workspace.activeLeaf;
+      if (!leaf) continue;
+      if (leaf.view.getViewType() === VIEW_TYPE_PDF_ANNOTATOR) return;
+      if (this.app.workspace.getActiveFile()?.path !== file.path) continue;
+
+      this.replacingCorePdfView = true;
+      try {
+        await leaf.setViewState({
+          type: VIEW_TYPE_PDF_ANNOTATOR,
+          state: { file: file.path },
+          active: true,
+        });
+        this.app.workspace.revealLeaf(leaf);
+      } finally {
+        this.replacingCorePdfView = false;
+      }
+      return;
+    }
+  }
+
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
@@ -133,24 +161,21 @@ class LpaSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Make this the default PDF viewer")
       .setDesc(
-        "Override Obsidian's core PDF viewer so clicking a .pdf opens this annotator. " +
-          "Takes effect after you reload the plugin (toggle it off and on, or restart Obsidian). " +
-          "Caveat: when you later disable this plugin, restart Obsidian to get the core PDF viewer back — " +
-          "we deliberately don't touch Obsidian internals to restore it."
+        "When enabled, ordinary .pdf clicks are redirected into this annotator. Enabled by default. " +
+          "This uses Obsidian's public file-open event and does not patch internal PDF-viewer state."
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.registerAsDefaultPdfHandler).onChange(async (v) => {
           this.plugin.settings.registerAsDefaultPdfHandler = v;
           await this.plugin.saveSettings();
-          new Notice("Reload the plugin for the PDF-handler change to take effect.");
+          new Notice(v ? "PDF clicks will open in Local PDF Annotator." : "PDF clicks will use Obsidian's core PDF viewer.");
         })
       );
 
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text:
-        "Default triggers (always available): right-click a PDF → “Annotate”, " +
-        "or the command “Open current PDF in annotator”.",
+        "Always available: right-click a PDF → “Annotate”, or use the command “Open current PDF in annotator”.",
     });
   }
 }
