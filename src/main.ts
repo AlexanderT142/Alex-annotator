@@ -16,7 +16,7 @@ interface LpaSettings {
 }
 
 const DEFAULT_SETTINGS: LpaSettings = {
-  registerAsDefaultPdfHandler: true,
+  registerAsDefaultPdfHandler: false,
 };
 
 export default class LocalPdfAnnotatorPlugin extends Plugin {
@@ -161,7 +161,7 @@ class LpaSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Make this the default PDF viewer")
       .setDesc(
-        "When enabled, ordinary .pdf clicks are redirected into this annotator. Enabled by default. " +
+        "When enabled, ordinary .pdf clicks are redirected into this annotator. " +
           "This uses Obsidian's public file-open event and does not patch internal PDF-viewer state."
       )
       .addToggle((t) =>
