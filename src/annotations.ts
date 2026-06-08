@@ -182,7 +182,7 @@ export function serializeAnnotations(doc: AnnotationDoc, pdfBasename: string): s
   lines.push(`# Annotations — ${pdfBasename}`);
   lines.push("");
   lines.push(
-    "<!-- Managed by Local PDF Annotator. The ```json block at the bottom is the " +
+    "<!-- Managed by PDF Annotator. The ```json block at the bottom is the " +
       "source of truth; the list above is for reading. Editing the prose is safe; " +
       "keep the json block intact. -->"
   );

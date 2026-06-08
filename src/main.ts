@@ -1,5 +1,5 @@
 /**
- * main.ts — Local PDF Annotator plugin entry point.
+ * main.ts — PDF Annotator plugin entry point.
  *
  * Triggers (all public, documented API):
  *   - file-menu "Annotate" item on .pdf files
@@ -31,7 +31,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     // shows the version match before any PDF is opened.
     const status = initPdfEngine();
     if (!status.ok) {
-      new Notice("Local PDF Annotator: pdf.js version self-check failed — see console.");
+      new Notice("PDF Annotator: pdf.js version self-check failed — see console.");
     }
 
     this.registerView(
@@ -221,7 +221,7 @@ class LpaSettingTab extends PluginSettingTab {
         t.setValue(this.plugin.settings.registerAsDefaultPdfHandler).onChange(async (v) => {
           this.plugin.settings.registerAsDefaultPdfHandler = v;
           await this.plugin.saveSettings();
-          new Notice(v ? "PDF clicks will open in Local PDF Annotator." : "PDF clicks will use Obsidian's core PDF viewer.");
+          new Notice(v ? "PDF clicks will open in PDF Annotator." : "PDF clicks will use Obsidian's core PDF viewer.");
         })
       );
 

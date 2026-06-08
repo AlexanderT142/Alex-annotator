@@ -1,6 +1,6 @@
-# Local PDF Annotator
+# PDF Annotator
 
-Local PDF Annotator is a desktop-only Obsidian plugin for reading PDFs, marking
+PDF Annotator is a desktop-only Obsidian plugin for reading PDFs, marking
 passages, and keeping searchable annotations next to the document.
 
 It stores annotation data in a local Markdown sidecar beside each PDF. The PDF
@@ -24,18 +24,18 @@ portable.
 
 ## Opening PDFs
 
-Local PDF Annotator is always available from:
+PDF Annotator is always available from:
 
 - File explorer: right-click a `.pdf` file and choose **Annotate**.
 - Command palette: run **Open current PDF in annotator**.
 
 You can also make it the default PDF viewer from plugin settings. This redirects
-ordinary `.pdf` clicks into Local PDF Annotator. The setting is opt-in for fresh
+ordinary `.pdf` clicks into PDF Annotator. The setting is opt-in for fresh
 installs.
 
 ## Basic Use
 
-1. Open a PDF in Local PDF Annotator.
+1. Open a PDF in PDF Annotator.
 2. Drag-select text. Selection alone creates nothing.
 3. Move to the slim handle at the end of the selection until the action popup
    opens.
@@ -62,7 +62,7 @@ tags remain anchored across zoom changes.
 
 ## Privacy
 
-Local PDF Annotator does not use telemetry and does not send PDF contents or
+PDF Annotator does not use telemetry and does not send PDF contents or
 annotation contents to any remote service. Data is stored locally in your vault.
 
 ## Legacy Import
@@ -75,7 +75,7 @@ Import legacy obsidian-annotator highlights for this PDF
 ```
 
 The importer searches notes with `annotation-target:` frontmatter, re-anchors
-quoted text in the PDF, and creates Local PDF Annotator highlights. Legacy notes
+quoted text in the PDF, and creates PDF Annotator highlights. Legacy notes
 are left untouched.
 
 ## Development

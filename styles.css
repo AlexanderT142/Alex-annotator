@@ -1,4 +1,4 @@
-/* ===== Local PDF Annotator ===================================================
+/* ===== PDF Annotator =========================================================
    Layout: a scrollable column of pages. Each page is a positioning context
    that stacks three layers: canvas (raster) < highlights < text (selectable).
    ============================================================================ */

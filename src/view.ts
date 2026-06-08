@@ -2288,7 +2288,7 @@ export class PdfAnnotatorView extends FileView {
     this.pagesEl?.empty();
     this.pagesEl?.createDiv({ cls: "lpa-status lpa-error", text: msg });
     this.renderAnnotationSidebar();
-    new Notice("Local PDF Annotator: failed to open PDF (see view).");
+    new Notice("PDF Annotator: failed to open PDF (see view).");
   }
 
   // ---- teardown -----------------------------------------------------------
