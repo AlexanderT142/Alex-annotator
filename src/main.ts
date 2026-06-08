@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS: LpaSettings = {
 export default class LocalPdfAnnotatorPlugin extends Plugin {
   settings!: LpaSettings;
   private replacingCorePdfView = false;
+  private nativeModeButtonRaf: number | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -81,11 +82,19 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     // the public file-open event and replace the active core PDF leaf.
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
+        this.scheduleNativePdfModeButtonRefresh();
         if (file instanceof TFile && file.extension === "pdf") {
           void this.openPdfClickInAnnotator(file);
         }
       })
     );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => this.scheduleNativePdfModeButtonRefresh())
+    );
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => this.scheduleNativePdfModeButtonRefresh())
+    );
+    this.app.workspace.onLayoutReady(() => this.scheduleNativePdfModeButtonRefresh());
 
     this.addSettingTab(new LpaSettingTab(this));
 
@@ -93,6 +102,11 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.nativeModeButtonRaf !== null) {
+      window.cancelAnimationFrame(this.nativeModeButtonRaf);
+      this.nativeModeButtonRaf = null;
+    }
+    this.removeNativeModeButtons();
     // Tear down our views first (cancels pdf.js tasks, destroys docs) …
     this.app.workspace.getLeavesOfType(VIEW_TYPE_PDF_ANNOTATOR).forEach((leaf) => leaf.detach());
     // … then revoke the worker Blob URL.
@@ -135,6 +149,48 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       }
       return;
     }
+  }
+
+  private scheduleNativePdfModeButtonRefresh(): void {
+    if (this.nativeModeButtonRaf !== null) return;
+    this.nativeModeButtonRaf = window.requestAnimationFrame(() => {
+      this.nativeModeButtonRaf = null;
+      this.refreshNativePdfModeButtons();
+    });
+  }
+
+  private refreshNativePdfModeButtons(): void {
+    this.removeNativeModeButtons();
+    for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
+      const file = (leaf.view as { file?: unknown }).file;
+      if (!(file instanceof TFile) || file.extension !== "pdf") continue;
+
+      const actionsEl = leaf.view.containerEl.querySelector<HTMLElement>(
+        ".view-header .view-actions, .view-actions"
+      );
+      if (!actionsEl) continue;
+
+      const btn = actionsEl.createEl("button", {
+        cls: "lpa-native-mode-button",
+        text: "Annotate: Off",
+        attr: {
+          type: "button",
+          "aria-label": "Annotation mode is off. Open this PDF in the annotator.",
+          title: "Annotation mode is off. Open in annotator.",
+        },
+      }) as HTMLButtonElement;
+      btn.onclick = (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        void this.openInAnnotator(file, "tab");
+      };
+    }
+  }
+
+  private removeNativeModeButtons(): void {
+    this.app.workspace.containerEl
+      .querySelectorAll<HTMLElement>(".lpa-native-mode-button")
+      .forEach((button) => button.remove());
   }
 
   async loadSettings(): Promise<void> {

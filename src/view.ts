@@ -37,6 +37,8 @@ const DEFAULT_SCALE = 1.25;
 const PREFETCH_MARGIN = "1000px";
 const MAX_HIGHLIGHT_ALPHA = 0.46;
 const MIN_INTERACTION_MARGIN = 96;
+const COLLAPSED_MARGIN_RAIL = 22;
+const MAX_READING_MARGIN = 286;
 const ACTIVE_RUN_CLASSES = ["lpa-run-single", "lpa-run-first", "lpa-run-middle", "lpa-run-last"] as const;
 const RUBBER_HANDLE_FEEL = {
   INTENT_RADIUS: 28,
@@ -120,6 +122,8 @@ export class PdfAnnotatorView extends FileView {
   private pagesEl!: HTMLElement;
   private leftMarginEl!: HTMLElement;
   private rightMarginEl!: HTMLElement;
+  private leftMarginToggleEl!: HTMLButtonElement;
+  private rightMarginToggleEl!: HTMLButtonElement;
   private connectionSvg!: SVGSVGElement;
   private annotationCountEl!: HTMLElement;
   private tagModeBtnEl!: HTMLButtonElement;
@@ -163,6 +167,7 @@ export class PdfAnnotatorView extends FileView {
   private pendingSelection: PendingSelection | null = null;
   private rubberHandle: RubberHandle | null = null;
   private selectionPopoverEl: HTMLElement | null = null;
+  private collapsedMargins: Record<"left" | "right", boolean> = { left: false, right: false };
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -276,7 +281,54 @@ export class PdfAnnotatorView extends FileView {
     this.connectionSvg.classList.add("lpa-connection-layer");
     this.connectionSvg.setAttribute("aria-hidden", "true");
     this.bodyEl.appendChild(this.connectionSvg);
+    this.leftMarginToggleEl = this.createMarginToggle("left");
+    this.rightMarginToggleEl = this.createMarginToggle("right");
+    this.syncMarginCollapseState();
     this.renderAnnotationSidebar();
+  }
+
+  private createMarginToggle(side: "left" | "right"): HTMLButtonElement {
+    const btn = this.bodyEl.createEl("button", {
+      cls: `lpa-margin-toggle lpa-margin-toggle-${side}`,
+      attr: { type: "button" },
+    }) as HTMLButtonElement;
+    btn.addEventListener("pointerdown", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.setMarginCollapsed(side, !this.collapsedMargins[side]);
+    });
+    btn.onclick = (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+    };
+    return btn;
+  }
+
+  private setMarginCollapsed(side: "left" | "right", collapsed: boolean): void {
+    if (this.collapsedMargins[side] === collapsed) return;
+    this.collapsedMargins[side] = collapsed;
+    this.syncMarginCollapseState();
+    this.scheduleMarginLayout();
+  }
+
+  private syncMarginCollapseState(): void {
+    this.rootEl?.toggleClass("is-left-margin-collapsed", this.collapsedMargins.left);
+    this.rootEl?.toggleClass("is-right-margin-collapsed", this.collapsedMargins.right);
+    this.syncOneMarginCollapseState("left", this.leftMarginEl, this.leftMarginToggleEl);
+    this.syncOneMarginCollapseState("right", this.rightMarginEl, this.rightMarginToggleEl);
+  }
+
+  private syncOneMarginCollapseState(side: "left" | "right", margin?: HTMLElement, toggle?: HTMLButtonElement): void {
+    const collapsed = this.collapsedMargins[side];
+    margin?.toggleClass("is-user-collapsed", collapsed);
+    if (!toggle) return;
+    toggle.toggleClass("is-collapsed", collapsed);
+    const sideLabel = side === "left" ? "left" : "right";
+    const label = collapsed ? `Show ${sideLabel} annotation margin` : `Hide ${sideLabel} annotation margin`;
+    toggle.setText(side === "left" ? (collapsed ? "‹" : "›") : (collapsed ? "›" : "‹"));
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
   }
 
   private setActiveColor(value: string): void {
@@ -498,6 +550,7 @@ export class PdfAnnotatorView extends FileView {
     this.updateElasticMargins();
     this.leftMarginEl.empty();
     this.rightMarginEl.empty();
+    this.syncMarginCollapseState();
 
     const annotations = [...(this.store?.doc.highlights ?? [])].sort(
       (a, b) => a.page - b.page || a.created.localeCompare(b.created)
@@ -1908,20 +1961,27 @@ export class PdfAnnotatorView extends FileView {
     const bodyRect = this.bodyEl.getBoundingClientRect();
     if (bodyRect.width <= 0 || bodyRect.height <= 0) return;
 
-    const pageRect = this.marginReferencePageRect();
-    const fallbackWidth = (this.defaultSize?.w ?? 612) * this.scale;
-    const fallbackLeft = (bodyRect.width - fallbackWidth) / 2;
-    const pageLeftX = pageRect ? pageRect.left - bodyRect.left : fallbackLeft;
-    const pageRightX = pageRect ? pageRect.right - bodyRect.left : fallbackLeft + fallbackWidth;
-    const realLeftWidth = clamp(0, pageLeftX, bodyRect.width);
-    const realRightWidth = clamp(0, bodyRect.width - pageRightX, bodyRect.width);
-    const maxOverlayWidth = Math.max(0, bodyRect.width / 2 - 8);
-    const leftWidth = clamp(0, Math.max(realLeftWidth, MIN_INTERACTION_MARGIN), maxOverlayWidth);
-    const rightWidth = clamp(0, Math.max(realRightWidth, MIN_INTERACTION_MARGIN), maxOverlayWidth);
+    const visibleSides = Number(!this.collapsedMargins.left) + Number(!this.collapsedMargins.right);
+    const pageTargetWidth = (this.defaultSize?.w ?? 612) * this.scale + 36;
+    const availableForMargins = Math.max(0, bodyRect.width - pageTargetWidth);
+    const elasticWidth = visibleSides > 0
+      ? clamp(MIN_INTERACTION_MARGIN, availableForMargins / visibleSides, MAX_READING_MARGIN)
+      : 0;
+    const leftColumn = this.collapsedMargins.left ? COLLAPSED_MARGIN_RAIL : elasticWidth;
+    const rightColumn = this.collapsedMargins.right ? COLLAPSED_MARGIN_RAIL : elasticWidth;
 
+    this.bodyEl.style.setProperty("--lpa-left-column", `${Math.round(leftColumn)}px`);
+    this.bodyEl.style.setProperty("--lpa-right-column", `${Math.round(rightColumn)}px`);
+
+    const pageRect = this.marginReferencePageRect();
+    const fallbackLeft = leftColumn + Math.max(0, (bodyRect.width - leftColumn - rightColumn - pageTargetWidth) / 2) + 18;
+    const pageLeftX = pageRect ? pageRect.left - bodyRect.left : fallbackLeft;
+    const pageRightX = pageRect ? pageRect.right - bodyRect.left : fallbackLeft + Math.max(1, pageTargetWidth - 36);
+    const leftWidth = this.collapsedMargins.left ? 0 : leftColumn;
+    const rightWidth = this.collapsedMargins.right ? 0 : rightColumn;
     this.marginGeometry = { leftWidth, rightWidth, pageLeftX, pageRightX };
-    this.applyElasticMarginWidth(this.leftMarginEl, leftWidth);
-    this.applyElasticMarginWidth(this.rightMarginEl, rightWidth);
+    this.applyElasticMarginWidth(this.leftMarginEl, leftColumn);
+    this.applyElasticMarginWidth(this.rightMarginEl, rightColumn);
   }
 
   private marginReferencePageRect(): DOMRect | null {
@@ -1943,7 +2003,6 @@ export class PdfAnnotatorView extends FileView {
 
   private applyElasticMarginWidth(margin: HTMLElement, width: number): void {
     const rounded = Math.max(0, Math.round(width));
-    margin.setCssProps({ width: `${rounded}px` });
     margin.style.setProperty("--lpa-margin-width", `${rounded}px`);
     margin.toggleClass("is-collapsed", rounded < 42);
     margin.toggleClass("is-tight", rounded >= 42 && rounded < 92);
@@ -2023,6 +2082,7 @@ export class PdfAnnotatorView extends FileView {
       const anchor = h ? this.computeAnnotationAnchor(h) : null;
       if (!h || !anchor) continue;
       const side = anchor.side;
+      if (this.collapsedMargins[side]) continue;
       const marginWidth = side === "left" ? this.marginGeometry.leftWidth : this.marginGeometry.rightWidth;
       if (marginWidth < 42) continue;
       const cardRect = card.getBoundingClientRect();
