@@ -28,7 +28,6 @@
   user-select: none;
 }
 .lpa-toolbar .lpa-title,
-.lpa-toolbar .lpa-zoom-label,
 .lpa-toolbar .lpa-status-dot,
 .lpa-toolbar .lpa-annotation-count {
   display: none;
@@ -52,6 +51,32 @@
   color: var(--text-normal);
   border-color: color-mix(in srgb, var(--interactive-accent) 42%, transparent);
   background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
+}
+.lpa-toolbar .lpa-zoom-button {
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.lpa-toolbar .lpa-zoom-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 48px;
+  padding: 0 6px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lpa-toolbar .lpa-zoom-label:hover,
+.lpa-toolbar .lpa-zoom-label:focus-visible {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  outline: none;
 }
 
 .lpa-native-mode-button {

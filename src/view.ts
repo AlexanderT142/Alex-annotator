@@ -116,7 +116,9 @@ export class PdfAnnotatorView extends FileView {
   private rootEl!: HTMLElement;
   private toolbarEl!: HTMLElement;
   private titleEl!: HTMLElement;
+  private zoomOutBtnEl!: HTMLButtonElement;
   private zoomLabelEl!: HTMLElement;
+  private zoomInBtnEl!: HTMLButtonElement;
   private statusDotEl!: HTMLElement;
   private bodyEl!: HTMLElement;
   private pagesEl!: HTMLElement;
@@ -203,6 +205,8 @@ export class PdfAnnotatorView extends FileView {
     this.registerDomEvent(this.pagesEl, "mousemove", (evt) => this.onPageMouseMove(evt));
     this.registerDomEvent(this.pagesEl, "mouseleave", () => this.clearHoveredHighlightSoon());
     this.registerDomEvent(this.pagesEl, "scroll", () => this.onPdfScroll());
+    this.registerDomEvent(this.pagesEl, "wheel", (evt) => this.onPdfWheel(evt as WheelEvent));
+    this.registerDomEvent(this.contentEl.ownerDocument, "keydown", (evt) => this.onDocumentKeyDown(evt as KeyboardEvent));
     this.registerDomEvent(this.rollListEl, "wheel", (evt) => this.onRollWheel(evt as WheelEvent));
     this.registerDomEvent(window, "resize", () => this.scheduleMarginLayout());
     this.marginResizeObserver = new ResizeObserver(() => this.scheduleMarginLayout());
@@ -232,7 +236,33 @@ export class PdfAnnotatorView extends FileView {
     this.rootEl = container.createDiv({ cls: "lpa-root" });
     this.toolbarEl = this.rootEl.createDiv({ cls: "lpa-toolbar", attr: { "aria-label": "PDF annotation controls" } });
     this.titleEl = this.toolbarEl.createSpan({ cls: "lpa-title", text: "PDF Annotator" });
+    this.zoomOutBtnEl = this.toolbarEl.createEl("button", {
+      cls: "lpa-zoom-button",
+      text: "-",
+      attr: { "aria-label": "Zoom out", title: "Zoom out" },
+    }) as HTMLButtonElement;
+    this.zoomOutBtnEl.onclick = () => this.zoomOut();
+
     this.zoomLabelEl = this.toolbarEl.createSpan({ cls: "lpa-zoom-label", text: "125%" });
+    this.zoomLabelEl.setAttribute("role", "button");
+    this.zoomLabelEl.setAttribute("tabindex", "0");
+    this.zoomLabelEl.setAttribute("aria-label", "Reset zoom");
+    this.zoomLabelEl.setAttribute("title", "Reset zoom");
+    this.zoomLabelEl.onclick = () => this.resetZoom();
+    this.zoomLabelEl.onkeydown = (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        this.resetZoom();
+      }
+    };
+
+    this.zoomInBtnEl = this.toolbarEl.createEl("button", {
+      cls: "lpa-zoom-button",
+      text: "+",
+      attr: { "aria-label": "Zoom in", title: "Zoom in" },
+    }) as HTMLButtonElement;
+    this.zoomInBtnEl.onclick = () => this.zoomIn();
+
     this.statusDotEl = this.toolbarEl.createSpan({ cls: "lpa-status-dot" });
     this.annotationCountEl = this.toolbarEl.createSpan({ cls: "lpa-annotation-count", text: "0 annotations" });
     this.swatchEls = [];
@@ -2232,6 +2262,67 @@ export class PdfAnnotatorView extends FileView {
 
   private zoomBy(factor: number): void {
     this.setScale(this.scale * factor);
+  }
+
+  private zoomAt(nextScale: number, viewportY: number): void {
+    const scrollerRect = this.pagesEl?.getBoundingClientRect();
+    if (!scrollerRect) {
+      this.setScale(nextScale);
+      return;
+    }
+
+    const anchor =
+      this.pageViews.find((pv) => {
+        const rect = pv.el.getBoundingClientRect();
+        return viewportY >= rect.top && viewportY <= rect.bottom;
+      }) ?? this.pageViews[[...this.visible].sort((a, b) => a - b)[0] ?? 0];
+
+    if (!anchor) {
+      this.setScale(nextScale);
+      return;
+    }
+
+    const oldRect = anchor.el.getBoundingClientRect();
+    const within = (viewportY - oldRect.top) / (anchor.el.offsetHeight || 1);
+    this.setScale(nextScale);
+    this.pagesEl.scrollTop = anchor.el.offsetTop + within * (anchor.el.offsetHeight || 1) - (viewportY - scrollerRect.top);
+  }
+
+  private zoomIn(): void {
+    this.zoomBy(ZOOM_STEP);
+  }
+
+  private zoomOut(): void {
+    this.zoomBy(1 / ZOOM_STEP);
+  }
+
+  private resetZoom(): void {
+    this.setScale(DEFAULT_SCALE);
+  }
+
+  private onPdfWheel(evt: WheelEvent): void {
+    if (!evt.metaKey && !evt.ctrlKey) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    this.zoomAt(this.scale * (evt.deltaY < 0 ? 1.1 : 1 / 1.1), evt.clientY);
+  }
+
+  private onDocumentKeyDown(evt: KeyboardEvent): void {
+    if ((!evt.metaKey && !evt.ctrlKey) || evt.altKey) return;
+    const target = evt.target instanceof Node ? evt.target : null;
+    const active = this.contentEl.ownerDocument.activeElement;
+    if (!target || (!this.rootEl.contains(target) && !(active && this.rootEl.contains(active)))) return;
+
+    if (evt.key === "+" || evt.key === "=") {
+      evt.preventDefault();
+      this.zoomIn();
+    } else if (evt.key === "-" || evt.key === "_") {
+      evt.preventDefault();
+      this.zoomOut();
+    } else if (evt.key === "0") {
+      evt.preventDefault();
+      this.resetZoom();
+    }
   }
 
   private setScale(next: number): void {
