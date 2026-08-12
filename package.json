@@ -20,6 +20,7 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
+    "build": "^0.1.4",
     "pdfjs-dist": "3.11.174"
   }
 }

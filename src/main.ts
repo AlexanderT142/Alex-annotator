@@ -42,6 +42,12 @@ interface LpaSettings {
   annotationStorageMode: AnnotationStorageMode;
   /** Vault-relative folder searched for legacy sidecars and used for exports. */
   annotationStorageFolder: string;
+  /** Custom palette colors for annotation tools (up to 5 colors). */
+  paletteColors: string[];
+  /** Wrap extracted notes in a <mark style="background: COLOR;"> tag. */
+  wrapExtractedNotesWithMark: boolean;
+  /** Custom template for note exports using {{annotation_note}} placeholder. */
+  exportTemplate: string;
 }
 
 const DEFAULT_SETTINGS: LpaSettings = {
@@ -49,6 +55,9 @@ const DEFAULT_SETTINGS: LpaSettings = {
   enableNativeOverlay: true,
   annotationStorageMode: "folder",
   annotationStorageFolder: DEFAULT_ANNOTATION_FOLDER,
+  paletteColors: ["#ff0000a6", "#00ff00a6", "#0000ffa6", "#ffff00a6"],
+  wrapExtractedNotesWithMark: false,
+  exportTemplate: "{{annotation_note}}",
 };
 
 function coerceAnnotationStorageMode(value: string): AnnotationStorageMode {
@@ -76,14 +85,20 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     this.registerView(
       VIEW_TYPE_PDF_ANNOTATOR,
       (leaf: WorkspaceLeaf) =>
-        new PdfAnnotatorView(leaf, () => this.annotationPathOptions(), this.bundleManager)
+        new PdfAnnotatorView(
+          leaf,
+          () => this.annotationPathOptions(),
+          this.bundleManager,
+          () => this.settings.paletteColors
+        )
     );
 
     this.nativeOverlays = new NativeOverlayManager(
       this,
       () => this.settings.enableNativeOverlay,
       () => this.annotationPathOptions(),
-      this.bundleManager
+      this.bundleManager,
+      () => this.settings.paletteColors
     );
 
     // Trigger 1: command palette.
@@ -152,8 +167,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
         if (!(file instanceof TFile) || file.extension !== "pdf") return false;
         if (!checking) {
           void this.bundleManager
-            .exportAnnotations(file, `${this.settings.annotationStorageFolder}/Exports`)
-            .then((path) => new Notice(`PDF Annotator: exported ${path}`))
+            .exportAnnotations(file, `${this.settings.annotationStorageFolder}`, this.settings.exportTemplate)
+            .then((path: string) => new Notice(`PDF Annotator: exported ${path}`))
             .catch((e: any) => {
               console.error(`${LOG_TAG} failed to export PDF annotations`, e);
               new Notice(`PDF Annotator: export failed — ${e?.message ?? e}`);
@@ -210,7 +225,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (!(file instanceof TFile) || file.extension !== "pdf") return;
-        void this.bundleManager.onPdfRenamed(file, oldPath).catch((e) =>
+        void this.bundleManager.onPdfRenamed(file, oldPath).catch((e: any) =>
           console.error(`${LOG_TAG} failed to update PDF bundle path metadata`, e)
         );
         for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PDF_ANNOTATOR)) {
@@ -224,7 +239,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
         if (!(file instanceof TFile) || file.extension !== "pdf") return;
-        void this.bundleManager.onPdfDeleted(file.path).catch((e) =>
+        void this.bundleManager.onPdfDeleted(file.path).catch((e: any) =>
           console.error(`${LOG_TAG} failed to update deleted PDF bundle metadata`, e)
         );
       })
@@ -320,12 +335,18 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (!Array.isArray(this.settings.paletteColors)) {
+      this.settings.paletteColors = [...DEFAULT_SETTINGS.paletteColors];
+    }
     this.settings.annotationStorageMode = coerceAnnotationStorageMode(
       this.settings.annotationStorageMode
     );
     this.settings.annotationStorageFolder = normalizeAnnotationStorageFolder(
       this.settings.annotationStorageFolder
     );
+    if (typeof this.settings.exportTemplate !== "string") {
+      this.settings.exportTemplate = DEFAULT_SETTINGS.exportTemplate;
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -349,14 +370,46 @@ class LpaSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
+    // --- Color Palette Settings ---
+    containerEl.createEl("h3", { text: "Color Palette" });
+    const paletteContainer = containerEl.createDiv({ cls: "palette-settings-container" });
+    this.renderPaletteSettings(paletteContainer);
+
+    // --- General Settings ---
+    containerEl.createEl("h3", { text: "General Settings" });
+
+    new Setting(containerEl)
+      .setName("Export Template")
+      .setDesc("Define the template for exported notes. Use {{annotation_note}} as a placeholder for the extracted annotations.")
+      .addTextArea((text) =>
+        text
+          .setPlaceholder("{{annotation_note}}")
+          .setValue(this.plugin.settings.exportTemplate)
+          .onChange(async (value) => {
+            this.plugin.settings.exportTemplate = value.trim() ? value : "{{annotation_note}}";
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Wrap extracted notes with mark tag")
+      .setDesc("When enabled, extracted notes will be wrapped in a <mark style=\"background: COLOR;\"> tag using the annotation's color.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.wrapExtractedNotesWithMark)
+          .onChange(async (value) => {
+            this.plugin.settings.wrapExtractedNotesWithMark = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
     new Setting(containerEl)
       .setName("Legacy annotation folder")
       .setDesc(
         `Existing path-based sidecars are imported from this folder. New annotations and a verified PDF backup are kept together in ${PDF_BUNDLE_LIBRARY}.`
       )
       .addText((t) => {
-        t
-          .setPlaceholder(DEFAULT_ANNOTATION_FOLDER)
+        t.setPlaceholder(DEFAULT_ANNOTATION_FOLDER)
           .setValue(this.plugin.settings.annotationStorageFolder)
           .onChange(async (v) => {
             this.plugin.settings.annotationStorageFolder = normalizeAnnotationStorageFolder(v);
@@ -399,6 +452,63 @@ class LpaSettingTab extends PluginSettingTab {
       text:
         "The command “Open current PDF in annotator” remains available as a stable custom-view fallback.",
     });
+  }
+
+  private renderPaletteSettings(containerEl: HTMLElement): void {
+    containerEl.empty();
+
+    this.plugin.settings.paletteColors.forEach((color, index) => {
+      const setting = new Setting(containerEl).setName(`Color ${index + 1}`);
+
+      // Visual color picker (standard 6-digit) synchronized with the full value
+      setting.addColorPicker((picker) => {
+        const baseHex = color.startsWith("#") ? color.slice(0, 7) : "#ff0000";
+        picker
+          .setValue(baseHex.length === 7 ? baseHex : "#ff0000")
+          .onChange(async (newBaseColor) => {
+            const alphaSuffix = color.length === 9 ? color.slice(7, 9) : "a6";
+            const updatedColor = `${newBaseColor}${alphaSuffix}`;
+            this.plugin.settings.paletteColors[index] = updatedColor;
+            await this.plugin.saveSettings();
+            this.renderPaletteSettings(containerEl);
+          });
+      });
+
+      // Text box that freely supports HEX strings up to 8 digits (plus hash)
+      setting.addText((text) => {
+        text
+          .setPlaceholder("#ff5582a6")
+          .setValue(color)
+          .onChange(async (newColor) => {
+            this.plugin.settings.paletteColors[index] = newColor.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+      setting.addButton((button) => {
+        button
+          .setButtonText("Remove")
+          .setWarning()
+          .onClick(async () => {
+            this.plugin.settings.paletteColors.splice(index, 1);
+            await this.plugin.saveSettings();
+            this.renderPaletteSettings(containerEl);
+          });
+      });
+    });
+
+    if (this.plugin.settings.paletteColors.length < 5) {
+      new Setting(containerEl).addButton((button) => {
+        button
+          .setButtonText("Add Color")
+          .setCta()
+          .onClick(async () => {
+            this.plugin.settings.paletteColors.push("#ff5582a6");
+            await this.plugin.saveSettings();
+            this.renderPaletteSettings(containerEl);
+          });
+      });
+    }
   }
 }
 

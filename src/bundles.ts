@@ -4,9 +4,9 @@
  * A PDF's SHA-256 is its durable identity. Every document gets one bundle at:
  *
  *   .pdf-annotator/bundles/sha256/<hash>/
- *     document.pdf
- *     annotations.md
- *     manifest.json
+ *      document.pdf
+ *      annotations.md
+ *      manifest.json
  *
  * The visible vault path is metadata only. Moving/renaming a PDF therefore
  * cannot orphan its annotations; replacing a file at the same path with
@@ -194,7 +194,7 @@ export class PdfBundleManager {
   }
 
   /** Write a user-visible snapshot without making that path authoritative. */
-  async exportAnnotations(file: TFile, exportFolder: string): Promise<string> {
+  async exportAnnotations(file: TFile, exportFolder: string, template = "{{annotation_note}}"): Promise<string> {
     const data = await this.app.vault.readBinary(file);
     const hash = await sha256Hex(data);
     const binding = await this.readBinding(hash);
@@ -206,10 +206,14 @@ export class PdfBundleManager {
     const exportPath = normalizePath(
       `${folder}/${file.basename}--${hash.slice(0, 12)}.annotations.md`
     );
-    await this.app.vault.adapter.write(
-      exportPath,
-      await this.app.vault.adapter.read(binding.annotationPath)
-    );
+
+    const rawJson = await this.app.vault.adapter.read(binding.annotationPath);
+    const parsedDoc = parseAnnotations(rawJson);
+    const markdownContent = parsedDoc
+      ? generateMarkdownExport(parsedDoc, file.basename, template)
+      : rawJson;
+
+    await this.app.vault.adapter.write(exportPath, markdownContent);
     return exportPath;
   }
 
@@ -236,8 +240,6 @@ export class PdfBundleManager {
     if (needsVerification) {
       let actual = await sha256Hex(await this.app.vault.adapter.readBinary(paths.backupPath));
       if (actual !== hash) {
-        // A partial/corrupt backup is repaired from the working PDF while it is
-        // still available, then verified again before annotation can proceed.
         await this.app.vault.adapter.writeBinary(paths.backupPath, pdfData);
         actual = await sha256Hex(await this.app.vault.adapter.readBinary(paths.backupPath));
       }
@@ -324,8 +326,6 @@ export class PdfBundleManager {
       if (await this.annotationCandidateMatches(path, fingerprint)) existing.push(path);
     }
 
-    // A unique fingerprint match recovers an old sidecar after the PDF was
-    // already renamed or moved before this bundle system was installed.
     if (fingerprint) {
       const index = await this.getLegacyFingerprintIndex();
       const fingerprintMatches = (index.get(fingerprint) ?? []).filter(
@@ -344,8 +344,6 @@ export class PdfBundleManager {
       if (!(await this.app.vault.adapter.exists(path))) return false;
       const parsed = parseAnnotations(await this.app.vault.adapter.read(path));
       if (!parsed) return false;
-      // A sidecar with a different document fingerprint must never migrate
-      // merely because a new PDF was placed at the same visible path.
       return !fingerprint || !parsed.fingerprint || parsed.fingerprint === fingerprint;
     } catch {
       return false;
@@ -421,4 +419,61 @@ export class PdfBundleManager {
     }
     return candidate;
   }
+}
+
+function colorToEmoji(_color: string): string {
+  // Replaced the colored square with the 🗒️ note emoji as requested
+  return "🗒️";
+}
+
+function generateMarkdownExport(doc: { pdf: string; highlights: any[] }, pdfBasename: string, template = "{{annotation_note}}"): string {
+  const frontmatterLines: string[] = [];
+  frontmatterLines.push("---");
+  frontmatterLines.push("lpa-annotations: 1");
+  frontmatterLines.push(`pdf: "${doc.pdf}"`);
+  frontmatterLines.push("---");
+  frontmatterLines.push("");
+
+  const annotationLines: string[] = [];
+  annotationLines.push(`# Annotations — ${pdfBasename}`);
+  annotationLines.push("");
+  annotationLines.push("<!-- Managed by PDF Annotator. The \`\`\`json block at the bottom is the source of truth; the list above is for reading. Editing the prose is safe; keep the json block intact. -->");
+  annotationLines.push("");
+
+  for (const h of doc.highlights) {
+    if (h.type === "tag") {
+      const text = (h.note || "Page note").replace(/\s+/g, " ").trim();
+      annotationLines.push(`- p.${h.page + 1} 📌 ^${h.id} — <mark style="background: ${h.color};">${text}</mark>`);
+    } else {
+      const text = (h.text || "").replace(/\s+/g, " ").trim();
+      const emoji = colorToEmoji(h.color);
+      const noteText = (h.note || "").replace(/\s+/g, " ").trim();
+      
+      if (noteText) {
+        annotationLines.push(`- p.${h.page + 1} ${emoji} ^${h.id} — <mark style="background: ${h.color};">${text} *(note: ${noteText})*</mark>`);
+      } else {
+        annotationLines.push(`- p.${h.page + 1} ${emoji} ^${h.id} — <mark style="background: ${h.color};">${text}</mark>`);
+      }
+    }
+    // Adds a blank line after each annotation
+    annotationLines.push("");
+  }
+
+  annotationLines.push("```json");
+  annotationLines.push(JSON.stringify(doc, null, 2));
+  annotationLines.push("```");
+  annotationLines.push("");
+
+  const renderedAnnotations = annotationLines.join("\n");
+  const frontmatter = frontmatterLines.join("\n");
+
+  // Inserts the user template, putting the frontmatter at the top and replacing the placeholder
+  let compiledContent = "";
+  if (template.includes("{{annotation_note}}")) {
+    compiledContent = template.replace("{{annotation_note}}", renderedAnnotations);
+  } else {
+    compiledContent = `${template}\n\n${renderedAnnotations}`;
+  }
+
+  return `${frontmatter}\n${compiledContent}`;
 }

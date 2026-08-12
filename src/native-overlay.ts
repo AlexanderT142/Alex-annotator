@@ -144,7 +144,8 @@ export class NativeOverlayManager {
     private plugin: Plugin,
     private enabled: () => boolean,
     private getAnnotationPathOptions: () => AnnotationPathOptions,
-    private bundleManager?: PdfBundleManager
+    private bundleManager?: PdfBundleManager,
+    private getPaletteColors?: () => string[]
   ) {}
 
   private get app(): App {
@@ -218,7 +219,8 @@ export class NativeOverlayManager {
       leaf,
       file,
       this.getAnnotationPathOptions,
-      this.bundleManager
+      this.bundleManager,
+      this.getPaletteColors
     );
     this.overlays.set(leaf, overlay);
     this.refresh();
@@ -362,8 +364,31 @@ export class NativePdfOverlay {
     private leaf: WorkspaceLeaf,
     readonly file: TFile,
     private getAnnotationPathOptions: () => AnnotationPathOptions,
-    private bundleManager?: PdfBundleManager
-  ) {}
+    private bundleManager?: PdfBundleManager,
+    private getPaletteColors?: () => string[]
+  ) {
+    const activePalette = this.getActivePalette();
+    if (activePalette.length > 0) {
+      this.currentColor = activePalette[0].fill;
+    }
+  }
+
+  /** Dynamic getter for configured palette colors */
+  private getActivePalette(): Array<{ name: string; fill: string; ink: string }> {
+    const customColors = this.getPaletteColors ? this.getPaletteColors() : [];
+    if (!customColors || customColors.length === 0) {
+      return PALETTE;
+    }
+
+    return customColors.map((color, index) => {
+      const pal = resolvePalette(color);
+      return {
+        name: pal?.name ?? `Color ${index + 1}`,
+        fill: color,
+        ink: pal?.ink ?? markInkColor(color),
+      };
+    });
+  }
 
   private get app(): App {
     return this.plugin.app;
@@ -634,8 +659,6 @@ export class NativePdfOverlay {
       const num = Number(pageEl.getAttribute("data-page-number"));
       if (!Number.isFinite(num) || num < 1) continue;
       const idx = num - 1;
-      // Skip untouched placeholder pages so a 500-page PDF doesn't load
-      // geometry for every page up front; selection capture loads on demand.
       const active =
         pageEl.hasAttribute("data-loaded") ||
         !!pageEl.querySelector(":scope > .textLayer, :scope > .canvasWrapper, :scope > .lpa-native-hl-layer");
@@ -654,11 +677,9 @@ export class NativePdfOverlay {
     if (!layer) {
       layer = pageEl.ownerDocument.createElement("div");
       layer.className = "lpa-highlight-layer lpa-native-hl-layer";
-      // Below the text layer in paint order so native selection stays crisp.
       if (textLayer) pageEl.insertBefore(layer, textLayer);
       else pageEl.appendChild(layer);
     } else if (textLayer && layer.compareDocumentPosition(textLayer) & Node.DOCUMENT_POSITION_PRECEDING) {
-      // A native re-render put the text layer before our fills; restore order.
       pageEl.insertBefore(layer, textLayer);
     }
     let noteLayer = pageEl.querySelector<HTMLElement>(":scope > .lpa-native-note-layer");
@@ -705,8 +726,6 @@ export class NativePdfOverlay {
     const store = this.store;
     if (!store) return;
 
-    // A page shown at a different rotation than our geometry would misplace
-    // every mark — skip painting rather than paint wrong.
     const box = pageContentBox(pageEl);
     if (box && !aspectMatches(box, geom)) {
       this.warnRotatedOnce();
@@ -716,8 +735,6 @@ export class NativePdfOverlay {
 
     const marks = store.byPage(idx).filter((h) => annotationTypeOf(h) === "highlight");
 
-    // Fill highlights: coalesce + occlude (same policy as the custom view) so
-    // overlapping fills never compound into a dark patch.
     const fillRects: PaintRect[] = [];
     let order = 0;
     for (const h of marks) {
@@ -749,7 +766,6 @@ export class NativePdfOverlay {
       div.toggleClass("is-hover", !!this.hoverId && ids.includes(this.hoverId));
     }
 
-    // Decorative styles: one continuous stroke per visual line.
     const metrics = lineMetricsFor(pxScale);
     for (const h of marks) {
       const st = markStyleOf(h);
@@ -829,9 +845,6 @@ export class NativePdfOverlay {
     });
   }
 
-  /** Tags accept pointer events directly; highlight fills are
-   * pointer-events:none (so text selection stays native) and get their hover
-   * from the mousemove hit test instead. */
   private bindMarkHover(el: HTMLElement, id: string | undefined): void {
     if (!id) return;
     el.addEventListener("mouseenter", () => this.setHoveredAnnotation(id));
@@ -977,9 +990,15 @@ export class NativePdfOverlay {
     };
 
     const swatches = pop.createDiv({ cls: "lpa-selection-swatches", attr: { "aria-label": "Highlight color" } });
-    for (const p of PALETTE) {
+    const palette = this.getActivePalette();
+    for (const p of palette) {
       const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name, title: p.name } });
-      sw.setCssProps({ background: p.fill });
+      
+      // FIX: Imposta il colore di sfondo reale sul DOM oltre alle proprietà custom
+      sw.style.backgroundColor = p.fill;
+      sw.style.setProperty("--lpa-fill", p.fill);
+      sw.style.setProperty("--lpa-ink", p.ink);
+
       sw.dataset.color = p.fill;
       sw.toggleClass("is-active", p.fill === this.currentColor);
       sw.onclick = (evt) => {
@@ -1067,8 +1086,6 @@ export class NativePdfOverlay {
     if (mode === "annotate" && created[0]) {
       this.openEditPopover(created[0].id, anchorX, anchorY, { focusNote: true });
     } else if (created[0]) {
-      // A new plain highlight still owns a temporary side card. Reveal enough
-      // margin immediately so the user learns where that card lives.
       this.setActiveAnnotation(created[0].id);
       void this.ensureReadableRailForAnnotation(created[0].id);
     }
@@ -1098,7 +1115,6 @@ export class NativePdfOverlay {
     }
     const sel = this.contentRoot?.ownerDocument.getSelection();
     if (sel && !sel.isCollapsed) return;
-    // Never hijack native PDF link/annotation clicks.
     if (target?.closest("a, .annotationLayer")) return;
     const hit = this.annotationAtPoint(evt.clientX, evt.clientY);
     if (hit) {
@@ -1208,9 +1224,15 @@ export class NativePdfOverlay {
         sw.toggleClass("is-active", sw.dataset.color === active);
       }
     };
-    for (const p of PALETTE) {
+    const palette = this.getActivePalette();
+    for (const p of palette) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
-      sw.setCssProps({ background: p.fill });
+      
+      // FIX: Imposta il colore di sfondo reale sul DOM oltre alle proprietà custom
+      sw.style.backgroundColor = p.fill;
+      sw.style.setProperty("--lpa-fill", p.fill);
+      sw.style.setProperty("--lpa-ink", p.ink);
+
       sw.dataset.color = p.fill;
       sw.onclick = () => {
         const patch: Partial<Highlight> =
@@ -1272,7 +1294,6 @@ export class NativePdfOverlay {
       this.notifyStoreChanged();
     };
 
-    // Position near the click, clamped into the window.
     pop.setCssProps({ visibility: "hidden" });
     const vw = doc.documentElement.clientWidth;
     const vh = doc.documentElement.clientHeight;
@@ -1289,7 +1310,6 @@ export class NativePdfOverlay {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.closeEditPopover();
     };
-    // Defer so the opening click doesn't immediately dismiss it.
     window.setTimeout(() => doc.addEventListener("mousedown", onDocPointer, true), 0);
     doc.addEventListener("keydown", onKey, true);
     this.editPopoverCleanup = () => {
@@ -1312,13 +1332,6 @@ export class NativePdfOverlay {
   }
 
   // ---- margin rails: side note cards beside the native pages -------------------
-  //
-  // The native view owns its layout, so instead of reflowing it into a
-  // three-column grid (what the custom view does) we pin an overlay to the
-  // native scroller's box and position cards in the whitespace beside the
-  // visible pages. Cards reuse the custom view's .lpa-margin-card styling and
-  // behavior: anchored beside their mark, stacked without overlap, connected
-  // by curved lines, expanding on hover/active, editable in place.
 
   private initMarginRail(): void {
     const root = this.contentRoot;
@@ -1337,9 +1350,6 @@ export class NativePdfOverlay {
       attr: { "aria-label": "Right annotations" },
     });
 
-    // Native PDF scrolling is owned by a nested `.pdf-viewer-container`.
-    // Bind that element directly: its scroll events do not bubble reliably
-    // through every Obsidian/Electron PDF-viewer composition.
     this.bindRailScroller(this.findScroller() ?? root);
     this.railResizeObserver = new ResizeObserver(() => this.scheduleRailLayout());
     this.railResizeObserver.observe(root);
@@ -1373,8 +1383,6 @@ export class NativePdfOverlay {
     });
   }
 
-  /** The native scroll container that hosts the pages (excludes the PDF
-   * thumbnail/outline sidebar, which lives beside it). */
   private findScroller(): HTMLElement | null {
     const root = this.contentRoot;
     if (!root) return null;
@@ -1394,8 +1402,6 @@ export class NativePdfOverlay {
     return this.scroller ?? root;
   }
 
-  /** Keep the listener attached to the currently live native PDF scroller.
-   * Obsidian can replace this element while rebuilding the PDF view. */
   private bindRailScroller(scroller: HTMLElement): void {
     if (this.railScrollTarget === scroller) return;
     this.railScrollTarget?.removeEventListener("scroll", this.railScrollHandler);
@@ -1418,8 +1424,6 @@ export class NativePdfOverlay {
       if (this.destroyed || this.activeId !== id || token !== this.railAutoZoomToken) return;
       const measure = this.measureAnnotationRail(id);
       if (!measure) {
-        // Native PDF pages are painted lazily after list navigation. Give the
-        // target page a short window to appear before deciding no rail exists.
         if (++measureAttempts >= RAIL_AUTO_ZOOM_MEASURE_ATTEMPTS) return;
         await sleep(100);
         continue;
@@ -1552,9 +1556,6 @@ export class NativePdfOverlay {
     const rootRect = root.getBoundingClientRect();
     const scroller = this.findScroller() ?? root;
     this.bindRailScroller(scroller);
-    // Track native zoom: page sizes change via the viewer's content element,
-    // which may resize without any watched mutation. observe() is idempotent
-    // and detached elements are dropped automatically.
     if (scroller !== root && this.railResizeObserver) {
       this.railResizeObserver.observe(scroller);
       if (scroller.firstElementChild instanceof HTMLElement) {
@@ -1573,7 +1574,6 @@ export class NativePdfOverlay {
       height: `${Math.round(areaRect.height)}px`,
     });
 
-    // Visible pages with known geometry; kick off geometry loads for the rest.
     const pages = new Map<number, { box: DOMRect; geom: PageGeom }>();
     let pageLeft = Infinity;
     let pageRight = -Infinity;
@@ -1639,8 +1639,6 @@ export class NativePdfOverlay {
     rail.toggleClass("is-spacious", rounded >= 260);
   }
 
-  /** Same policy as the custom view: tags show a card while pinned or engaged;
-   * highlights show once they carry a note / side note / pin, or while engaged. */
   private wantsMarginCard(h: Highlight): boolean {
     if (annotationTypeOf(h) === "tag") {
       return !!h.isPinned || h.id === this.hoverId || h.id === this.activeId;
@@ -1725,8 +1723,6 @@ export class NativePdfOverlay {
     return preferred;
   }
 
-  /** Create/keep/remove card DOM to match `desired` without disturbing a card
-   * the user is currently typing in. */
   private reconcileRailCards(desired: RailEntry[]): void {
     const margins = this.marginsEl;
     if (!margins) return;
@@ -1739,13 +1735,10 @@ export class NativePdfOverlay {
       const entry = wanted.get(id);
       const holdsFocus = !!focused && card.contains(focused);
       if (!entry) {
-        // Keep a card alive while the user is typing in it, even if its page
-        // scrolled out of view; it goes away on the next pass after blur.
         if (!holdsFocus) card.remove();
         continue;
       }
       const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
-      // Re-parenting a focused element would blur it mid-edit; defer the move.
       if (rail && card.parentElement !== rail && !holdsFocus) rail.appendChild(card);
       this.syncCardContent(card, entry.h);
       wanted.delete(id);
@@ -1802,8 +1795,6 @@ export class NativePdfOverlay {
     note.value = h.note ?? "";
     note.onfocus = () => this.setActiveAnnotation(h.id);
     note.oninput = () => {
-      // Store + page marks + list panel, but no card rebuild: the rebuild
-      // path skips value writes on the focused textarea anyway.
       this.store?.update(h.id, { note: note.value });
       syncMarginCardPresentation(card);
       this.repaintPage(h.page);
@@ -1833,8 +1824,6 @@ export class NativePdfOverlay {
     return card;
   }
 
-  /** Refresh a card's accent/state/text from the store (skipping any textarea
-   * that currently has focus, so in-place edits are never clobbered). */
   private syncCardContent(card: HTMLElement, h: Highlight): void {
     const pal = resolvePalette(annotationColor(h));
     card.style.setProperty("--lpa-accent", pal?.ink ?? markInkColor(annotationColor(h)));
@@ -1865,7 +1854,6 @@ export class NativePdfOverlay {
     }
   }
 
-  /** Stack each page's cards inside that page's moving vertical band. */
   private stackRailCards(desired: RailEntry[]): void {
     const byId = new Map(desired.map((d) => [d.h.id, d]));
     for (const rail of [this.leftRailEl, this.rightRailEl]) {
@@ -1875,7 +1863,7 @@ export class NativePdfOverlay {
       const groups = new Map<number, Array<{ card: HTMLElement; entry: RailEntry }>>();
       for (const card of cards) {
         const entry = byId.get(card.dataset.hlId ?? "");
-        if (!entry) continue; // focused off-screen orphan: hold its last position
+        if (!entry) continue;
         const group = groups.get(entry.h.page) ?? [];
         group.push({ card, entry });
         groups.set(entry.h.page, group);
@@ -2025,9 +2013,6 @@ export class NativePdfOverlay {
 
   // ---- hover / active binding between marks, tags, and cards -------------------
 
-  /** Highlight fills are pointer-events:none so native text selection stays
-   * intact — hover comes from hit-testing the pointer against the page under
-   * it (rAF-throttled; only the hovered page's rects are checked). */
   private onPointerMove(evt: MouseEvent): void {
     if (this.destroyed || this.tagMode || !this.store) return;
     const target = evt.target as HTMLElement | null;
@@ -2114,8 +2099,6 @@ export class NativePdfOverlay {
     this.syncBindingState();
   }
 
-  /** Unpinned tag cards only exist while engaged, so hover/active transitions
-   * on them change the card set, not just classes. */
   private dynamicTagCardDependsOn(id: string | null): boolean {
     if (!id) return false;
     const h = this.store?.get(id);
@@ -2146,7 +2129,6 @@ export class NativePdfOverlay {
       tag.toggleClass("is-active", !!id && id === this.activeId);
       tag.toggleClass("is-hover", !!id && id === this.hoverId);
     }
-    // Connection strokes carry hover emphasis too.
     this.scheduleRailLayout();
   }
 
@@ -2238,11 +2220,8 @@ export class NativePdfOverlay {
     const pageEl = await this.navigateNativeToPage(h.page);
     if (!pageEl) return;
     pageEl.scrollIntoView({ block: "center" });
-    // This routine polls through the native viewer's lazy page render and then
-    // zooms out only until the selected card has readable side space.
     void this.ensureReadableRailForAnnotation(id);
     this.scheduleRailLayout();
-    // The native viewer renders lazily; poll briefly for the painted mark.
     const isTag = annotationTypeOf(h) === "tag";
     for (let i = 0; i < 12; i++) {
       await sleep(150);
@@ -2268,9 +2247,6 @@ export class NativePdfOverlay {
     }
   }
 
-  /** Navigate through the native toolbar when the requested page has not been
-   * materialised in Obsidian's lazy PDF DOM. PDF page labels matter here: a
-   * book's physical page 27 may be labelled "5" after its front matter. */
   private async navigateNativeToPage(pageIndex: number): Promise<HTMLElement | null> {
     const root = this.contentRoot;
     if (!root) return null;
@@ -2433,9 +2409,6 @@ export class NativePdfOverlay {
 
 // ---- module helpers (ported from the custom view; base-viewport space) --------
 
-/** The box the PDF content actually occupies inside a native ".page" div.
- * Prefer the native text layer (absolute, inset 0 — where selection rects
- * live), then the canvas wrapper, then our own inset-0 layer. */
 function pageContentBox(pageEl: HTMLElement): DOMRect | null {
   const ref =
     pageEl.querySelector<HTMLElement>(":scope > .textLayer") ??
@@ -2460,7 +2433,6 @@ function clientToPdfPoint(clientX: number, clientY: number, box: DOMRect, geom: 
   return [p[0], p[1]];
 }
 
-/** PDF-space rects → base-viewport (scale 1) rects, origin top-left. */
 function rectsToBase(geom: PageGeom, rects: PdfRect[]): BaseRect[] {
   const out: BaseRect[] = [];
   for (const r of rects) {
@@ -2476,7 +2448,6 @@ function rectsToBase(geom: PageGeom, rects: PdfRect[]): BaseRect[] {
   return out;
 }
 
-/** Position a mark as a % of the page box so native zoom keeps it aligned. */
 function applyPctBox(el: HTMLElement, r: BaseRect, geom: PageGeom): void {
   el.setCssProps({
     left: `${(r.left / geom.w) * 100}%`,
@@ -2677,7 +2648,6 @@ function markInkColor(color: string): string {
   return `rgba(${Math.round(c.r * k)}, ${Math.round(c.g * k)}, ${Math.round(c.b * k)}, 0.95)`;
 }
 
-/** Calm card tint derived from the mark color (same recipe as the custom view). */
 function stickerBackgroundColor(color: string, alpha: number): string {
   const pal = resolvePalette(color);
   const fill = pal?.cardFill ?? pal?.fill ?? color;

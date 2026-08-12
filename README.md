@@ -1,3 +1,18 @@
+## 🚀 About this fork
+
+* **Custom Color Selector:** Added a customizable color picker (ranging from 1 to 5 colors) directly from the settings.
+* **HTML \<mark> Tag Integration in Markdown Export (bundles.ts):** Configured the system so that all text highlights exported into the .annotations.md file are wrapped inside HTML \<mark style="background: [color];">...\</mark> tags. This ensures that when Obsidian renders the file, it applies the exact background color chosen by the user for that specific highlight. This option can be turned off in settings.
+* **Inline Note Inclusion Within the Tag:** Updated the logic so that if a user writes a personal note associated with a highlight, it is rendered directly inside the same \<mark> block (placed right after the highlighted text, enclosed in parentheses, and formatted in italics: *(note: ...)*). This keeps the text and the note visually bound together under the same background color styling.
+* **Dedicated Configuration Options:** Added and integrated configuration settings within the plugin preferences to handle formatting behavior and wrapping with the \<mark> tag, ensuring the system consistently adheres to this structure during data synchronization and export.
+* **Custom Annotation Icon:** Replaced the default colored square placeholder with the note emoji (`🗒️`) for all highlight annotations.
+* **Inline Note Inclusion in Markdown:** Updated the Markdown generation so that user-written notes (the `note` field) now appear directly on the same line as the annotation, placed right after the highlighted text, enclosed in parentheses, and formatted in italics (`*(note: ...)*`).
+* **Spacing Between Annotations:** Added an automatic blank line between each annotation in the export file to significantly improve document readability and formatting.
+* **Direct Export Folder Path:** Updated the export functionality so that files are saved directly into the exact folder specified by the user in the settings, removing any extra sub-folders.
+* **Custom Export Template Support:** Added a settings option allowing users to define a custom template for exported notes using the `{{annotation_note}}` placeholder, while automatically positioning the YAML frontmatter at the very top of the file for proper plugin integration.
+* **TypeScript Build Bug Fixes:** Resolved missing type issues (implicit `any` types and path parameters) in `main.ts` and cleared non-standard space characters in `bundles.ts` to ensure a clean build and prevent module resolution errors.
+
+
+Original plugin:
 # PDF Annotator
 
 Read a PDF, mark the parts that matter, and keep your own thoughts beside the
@@ -76,6 +91,7 @@ let PDF Annotator choose a side, or delete it.
 4. Write your thought.
 5. Keep reading; your note stays beside the page.
 6. Use the list when you want to find it again.
+
 
 ---
 

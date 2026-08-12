@@ -27,11 +27,13 @@
   backdrop-filter: blur(8px);
   user-select: none;
 }
+
 .lpa-toolbar .lpa-title,
 .lpa-toolbar .lpa-status-dot,
 .lpa-toolbar .lpa-annotation-count {
   display: none;
 }
+
 .lpa-toolbar button {
   height: 24px;
   padding: 0 9px;
@@ -43,15 +45,18 @@
   border: 0.5px solid transparent;
   cursor: pointer;
 }
+
 .lpa-toolbar button:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
 }
+
 .lpa-toolbar button.is-active {
   color: var(--text-normal);
   border-color: color-mix(in srgb, var(--interactive-accent) 42%, transparent);
   background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
 }
+
 .lpa-toolbar .lpa-zoom-button {
   width: 24px;
   min-width: 24px;
@@ -59,6 +64,7 @@
   font-size: 13px;
   font-weight: 600;
 }
+
 .lpa-toolbar .lpa-zoom-label {
   display: inline-flex;
   align-items: center;
@@ -72,6 +78,7 @@
   line-height: 1;
   cursor: pointer;
 }
+
 .lpa-toolbar .lpa-zoom-label:hover,
 .lpa-toolbar .lpa-zoom-label:focus-visible {
   color: var(--text-normal);
@@ -81,23 +88,23 @@
 
 /* ===== Native PDF view annotation overlay (experimental) ====================
    Injected into Obsidian's OWN pdf view (view type "pdf"): a control group in
-   the native toolbar plus per-page overlay layers (which reuse the
-   .lpa-highlight-layer / .lpa-note-layer plumbing below). Everything here is
-   namespaced lpa-native-* and removed when annotation mode is toggled off, the
-   leaf changes file, or the plugin unloads. */
+   the native toolbar plus per-page overlay layers. */
 .lpa-native-controls {
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
+
 .pdf-toolbar .lpa-native-controls {
   margin-inline-start: 6px;
   padding-inline-start: 6px;
   border-inline-start: 1px solid color-mix(in srgb, var(--background-modifier-border) 80%, transparent);
 }
+
 .view-actions .lpa-native-controls {
   margin-inline-end: 4px;
 }
+
 .lpa-native-controls button.clickable-icon {
   display: inline-flex;
   align-items: center;
@@ -105,17 +112,21 @@
   padding: 4px 6px;
   color: var(--text-muted);
 }
+
 .lpa-native-controls button.clickable-icon:hover {
   color: var(--text-normal);
 }
+
 .lpa-native-controls button.clickable-icon.is-active {
   color: var(--interactive-accent);
   background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
 }
+
 .lpa-native-toggle-label {
   font-size: 11px;
   line-height: 1;
 }
+
 .lpa-native-count {
   min-width: 16px;
   margin-inline-start: 2px;
@@ -138,44 +149,46 @@
 .lpa-native-note-layer {
   z-index: 5;
 }
+
 .lpa-page-tag.lpa-flash {
   animation: lpa-flash 1.1s ease;
 }
 
-/* Margin rails overlaid on the native viewer. The container is pinned to the
-   native scroll area's box by JS (so the PDF thumbnail sidebar and toolbar are
-   never covered); the rails reuse the custom view's .lpa-margin /
-   .lpa-margin-card styling. Only the cards accept pointer events — scrolling,
-   selection, and clicks pass through everywhere else. */
+/* Margin rails overlaid on the native viewer. */
 .lpa-native-margins {
   position: absolute;
   z-index: 30;
   pointer-events: none;
   overflow: hidden;
 }
+
 .lpa-native-margins .lpa-connection-layer {
   overflow: hidden;
 }
+
 .lpa-native-margins .lpa-margin {
   position: absolute;
   top: 0;
   height: 100%;
   pointer-events: none;
 }
+
 .lpa-native-margins .lpa-margin-left {
   left: 0;
 }
+
 .lpa-native-margins .lpa-margin-right {
   right: 0;
 }
+
 .lpa-native-margins .lpa-margin-card {
   pointer-events: auto;
 }
+
 .lpa-native-margins .lpa-margin.is-collapsed .lpa-margin-card {
   pointer-events: none;
 }
-/* While the native viewer scrolls, cards must track their anchors instantly
-   (mirrors the .lpa-body.is-scrolling rules of the custom view). */
+
 .lpa-native-margins.is-scrolling .lpa-margin-card {
   transition:
     width 120ms ease,
@@ -185,6 +198,7 @@
     opacity 120ms ease,
     box-shadow 120ms ease;
 }
+
 .lpa-native-margins.is-scrolling .lpa-connection-line,
 .lpa-native-margins.is-scrolling .lpa-connection-dot {
   transition: none;
@@ -194,14 +208,15 @@
 .lpa-native-edit-popover {
   width: 264px;
 }
+
 .lpa-native-popover-source {
-  padding: 2px 2px 0;
+  padding: 2px 2px 0 6px;
   font-size: 11px;
   line-height: 1.35;
   color: var(--text-faint);
   border-left: 2px solid var(--background-modifier-border);
-  padding-left: 6px;
 }
+
 .lpa-native-note {
   width: 100%;
   resize: vertical;
@@ -213,6 +228,7 @@
   line-height: 1.4;
   padding: 5px 7px;
 }
+
 .lpa-native-note:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
@@ -222,6 +238,7 @@
 .workspace-leaf-content[data-type="pdf"] .view-content {
   position: relative;
 }
+
 .lpa-native-roll {
   position: absolute;
   top: 44px;
@@ -238,22 +255,26 @@
   background: var(--background-primary);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
 }
+
 .lpa-native-roll-head {
   display: flex;
   align-items: center;
   gap: 6px;
 }
+
 .lpa-native-roll-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-normal);
 }
+
 .lpa-native-roll-meta {
   flex: 1;
   font-size: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
 .lpa-native-roll-close {
   width: 20px;
   height: 20px;
@@ -266,27 +287,32 @@
   line-height: 1;
   cursor: pointer;
 }
+
 .lpa-native-roll-close:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
 }
+
 .lpa-native-roll-search {
   width: 100%;
   height: 26px;
   font-size: 12px;
 }
+
 .lpa-native-roll-list {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
+
 .lpa-native-roll-empty {
   padding: 10px 4px;
   font-size: 12px;
   color: var(--text-faint);
   text-align: center;
 }
+
 .lpa-native-roll-item {
   padding: 5px 7px;
   border: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
@@ -294,59 +320,71 @@
   border-radius: 6px;
   cursor: pointer;
 }
+
 .lpa-native-roll-item:hover {
   background: var(--background-modifier-hover);
 }
+
 .lpa-native-roll-item-head {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 2px;
 }
+
 .lpa-native-roll-page {
   font-size: 10px;
   font-weight: 600;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
 .lpa-native-roll-kind {
   font-size: 10px;
   color: var(--text-faint);
 }
+
 .lpa-native-roll-text {
   font-size: 12px;
   line-height: 1.35;
   color: var(--text-normal);
 }
+
 .lpa-native-roll-source {
   margin-top: 2px;
   font-size: 11px;
   line-height: 1.3;
   color: var(--text-faint);
 }
+
 .lpa-zoom-label {
   min-width: 48px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+
 .lpa-status-dot {
   font-size: 11px;
   opacity: 0.85;
   margin-left: 4px;
   white-space: nowrap;
 }
+
 .lpa-status-dot.is-ok {
   color: var(--text-success, var(--text-muted));
 }
+
 .lpa-status-dot.is-error {
   color: var(--text-error);
 }
+
 .lpa-annotation-count {
   font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
   cursor: pointer;
 }
+
 .lpa-annotation-count:hover {
   color: var(--text-normal);
 }
@@ -361,9 +399,11 @@
   background: var(--background-primary);
   position: relative;
 }
+
 .lpa-roll.is-hidden {
   display: none;
 }
+
 .lpa-roll-head {
   flex: 0 0 auto;
   display: flex;
@@ -371,12 +411,14 @@
   gap: 8px;
   padding: 7px 174px 5px 10px;
 }
+
 .lpa-roll-title {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
 }
+
 .lpa-roll-meta {
   min-width: 54px;
   font-family: var(--font-monospace);
@@ -384,6 +426,7 @@
   color: var(--text-faint);
   white-space: nowrap;
 }
+
 .lpa-roll-search {
   flex: 1 1 auto;
   min-width: 160px;
@@ -392,6 +435,7 @@
   border-radius: 5px;
   font-size: 12px;
 }
+
 .lpa-roll-close {
   flex: 0 0 auto;
   width: 24px;
@@ -400,6 +444,7 @@
   border-radius: 5px;
   line-height: 1;
 }
+
 .lpa-roll-list {
   flex: 1 1 auto;
   display: flex;
@@ -420,28 +465,34 @@
     color-mix(in srgb, var(--background-modifier-border) 42%, transparent);
   mask-image: linear-gradient(90deg, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
 }
+
 .lpa-roll-list::-webkit-scrollbar {
   display: block;
   height: 9px;
 }
+
 .lpa-roll-list::-webkit-scrollbar-track {
   background: color-mix(in srgb, var(--background-modifier-border) 36%, transparent);
   border-radius: 999px;
 }
+
 .lpa-roll-list::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--text-muted) 40%, transparent);
   border: 2px solid var(--background-primary);
   border-radius: 999px;
 }
+
 .lpa-roll-list::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text-muted) 62%, transparent);
 }
+
 .lpa-roll-empty {
   align-self: center;
   color: var(--text-faint);
   font-size: 12px;
   padding: 12px 2px;
 }
+
 .lpa-roll-item {
   flex: 0 0 clamp(178px, 22vw, 248px);
   min-width: 0;
@@ -460,25 +511,30 @@
   overflow: hidden;
   transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
+
 .lpa-roll-item:first-child {
   border-top-left-radius: 5px;
   border-bottom-left-radius: 5px;
 }
+
 .lpa-roll-item:last-child {
   border-top-right-radius: 5px;
   border-bottom-right-radius: 5px;
 }
+
 .lpa-roll-item:hover,
 .lpa-roll-item.is-hover,
 .lpa-roll-item.is-active {
   background: color-mix(in srgb, var(--background-secondary) 82%, var(--lpa-accent, transparent));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 26%, transparent);
 }
+
 .lpa-roll-item.is-active {
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 42%, transparent),
     inset 0 -2px 0 color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 64%, transparent);
 }
+
 .lpa-roll-item-head {
   display: flex;
   align-items: center;
@@ -486,6 +542,7 @@
   min-width: 0;
   margin-bottom: 4px;
 }
+
 .lpa-roll-dot {
   width: 4px;
   height: 4px;
@@ -493,11 +550,13 @@
   background: var(--lpa-accent, currentColor);
   flex: 0 0 auto;
 }
+
 .lpa-roll-page {
   font-family: var(--font-monospace);
   font-size: 9px;
   color: var(--text-faint);
 }
+
 .lpa-roll-kind,
 .lpa-roll-pin {
   min-width: 0;
@@ -507,10 +566,12 @@
   font-size: 9px;
   color: var(--text-faint);
 }
+
 .lpa-roll-pin {
   margin-left: auto;
   color: var(--interactive-accent);
 }
+
 .lpa-roll-note {
   color: var(--text-muted);
   font-size: 11px;
@@ -518,6 +579,7 @@
   max-height: 29px;
   overflow: hidden;
 }
+
 .lpa-roll-source {
   margin-top: 4px;
   padding-top: 4px;
@@ -535,11 +597,13 @@
   align-items: center;
   gap: 10px;
 }
+
 .lpa-styles {
   display: flex;
   gap: 3px;
   align-items: center;
 }
+
 .lpa-style-btn {
   width: 24px;
   height: 22px;
@@ -552,13 +616,16 @@
   border: 1px solid transparent;
   background: var(--background-secondary);
 }
+
 .lpa-style-btn:hover {
   background: var(--background-modifier-hover);
 }
+
 .lpa-style-btn.is-active {
   border-color: var(--interactive-accent);
   background: var(--background-primary);
 }
+
 .lpa-style-sample {
   position: relative;
   font-size: 13px;
@@ -567,11 +634,13 @@
   color: var(--text-normal);
   padding-bottom: 2px;
 }
+
 .lpa-style-sample--highlight {
   background: var(--lpa-fill, #FBF719);
   border-radius: 2px;
   padding: 0 1px 2px;
 }
+
 .lpa-style-sample--underline { border-bottom: 2px solid var(--lpa-ink, currentColor); }
 .lpa-style-sample--dashed { border-bottom: 2px dashed var(--lpa-ink, currentColor); }
 .lpa-style-sample--dotted { border-bottom: 2px dotted var(--lpa-ink, currentColor); }
@@ -589,11 +658,13 @@
   border-bottom: 2px dotted color-mix(in srgb, var(--lpa-ink, currentColor) 55%, transparent);
 }
 
+/* ===== Palette Swatches =================================================== */
 .lpa-swatches {
   display: flex;
   gap: 4px;
   align-items: center;
 }
+
 .lpa-swatch {
   width: 16px;
   height: 16px;
@@ -602,9 +673,18 @@
   border: 2px solid transparent;
   box-shadow: 0 0 0 1px var(--background-modifier-border);
   padding: 0;
+  /* Permette al colore impostato da JavaScript di dominare */
+  background-color: var(--lpa-fill, inherit) !important;
+  transition: transform 0.15s ease, border-color 0.15s ease;
 }
+
+.lpa-swatch:hover {
+  transform: scale(1.15);
+}
+
 .lpa-swatch.is-active {
   border-color: var(--text-normal);
+  transform: scale(1.1);
 }
 
 .lpa-pages {
@@ -625,6 +705,7 @@
   -webkit-user-select: text;
   z-index: 1;
 }
+
 .lpa-root.is-tag-mode .lpa-pages,
 .lpa-root.is-tag-mode .lpa-page {
   cursor: crosshair;
@@ -642,6 +723,7 @@
   grid-template-rows: minmax(0, 1fr);
   transition: grid-template-columns 220ms cubic-bezier(0.25, 0.1, 0.25, 1);
 }
+
 .lpa-margin {
   --lpa-card-max: 156px;
   position: relative;
@@ -654,40 +736,52 @@
   z-index: 6;
   transition: opacity 180ms ease;
 }
+
 .lpa-margin-left {
   grid-column: 1;
 }
+
 .lpa-margin-right {
   grid-column: 3;
 }
+
 .lpa-margin.is-collapsed {
   border-color: transparent;
 }
+
 .lpa-margin.is-user-collapsed .lpa-margin-card {
   opacity: 0;
   pointer-events: none;
 }
+
 .lpa-margin-left.is-user-collapsed .lpa-margin-card {
   transform: translateX(18px);
 }
+
 .lpa-margin-right.is-user-collapsed .lpa-margin-card {
   transform: translateX(-18px);
 }
+
 .lpa-margin.is-compact {
   --lpa-card-max: 132px;
 }
+
 .lpa-margin.is-roomy {
   --lpa-card-max: 230px;
 }
+
 .lpa-margin.is-spacious {
   --lpa-card-max: 286px;
 }
+
 .lpa-body.is-scrolling .lpa-margin {
   transition: none;
 }
+
 .lpa-body.is-scrolling {
   transition: none;
 }
+
 .lpa-connection-layer {
   position: absolute;
   inset: 0;
@@ -695,6 +789,7 @@
   z-index: 5;
   overflow: visible;
 }
+
 .lpa-margin-toggle {
   position: absolute;
   top: 50%;
@@ -728,14 +823,17 @@
     box-shadow 180ms ease,
     opacity 180ms ease;
 }
+
 .lpa-margin-toggle-left {
   left: 7px;
   transform: translate(0, -50%);
 }
+
 .lpa-margin-toggle-right {
   right: 7px;
   transform: translate(0, -50%);
 }
+
 .lpa-margin-toggle:hover {
   color: var(--text-normal);
   border-color: color-mix(in srgb, var(--interactive-accent) 28%, var(--background-modifier-border));
@@ -744,9 +842,11 @@
     0 2px 10px rgba(0, 0, 0, 0.16),
     inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
 }
+
 .lpa-margin-toggle:active {
   transform: translate(0, -50%) scale(0.94);
 }
+
 .lpa-margin-toggle.is-collapsed {
   width: 22px;
   height: 32px;
@@ -756,21 +856,22 @@
     0 2px 10px rgba(0, 0, 0, 0.16),
     inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 10%, transparent);
 }
+
 .lpa-margin-toggle-left.is-collapsed {
   left: 0;
   right: auto;
   border-radius: 999px 0 0 999px;
   transform: translate(0, -50%);
 }
+
 .lpa-margin-toggle-right.is-collapsed {
   right: 0;
   left: auto;
   border-radius: 0 999px 999px 0;
   transform: translate(0, -50%);
 }
-.lpa-margin-toggle-left.is-collapsed:active {
-  transform: translate(0, -50%) scale(0.96);
-}
+
+.lpa-margin-toggle-left.is-collapsed:active,
 .lpa-margin-toggle-right.is-collapsed:active {
   transform: translate(0, -50%) scale(0.96);
 }
@@ -784,11 +885,9 @@
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
   user-select: text;
   -webkit-user-select: text;
-  /* Confine the highlight layer's multiply blend to this page: it blends with
-     the canvas (rasterised glyphs + white paper) below it and nothing else. */
   isolation: isolate;
-  /* width/height set inline per render from the viewport */
 }
+
 .lpa-page > canvas {
   position: absolute;
   top: 0;
@@ -799,72 +898,58 @@
   -webkit-user-select: none;
 }
 
-/* Highlights sit above the canvas, below the text layer. The whole layer is
-   composited onto the page with `multiply`, so the ink reads as if it were laid
-   down BEHIND the text: black glyphs (× ink → black) stay crisp and fully black,
-   while the white paper (× ink → ink) takes the marker colour. No translucent
-   veil ever darkens or washes out the glyphs. The text layer (z-index 2) and
-   JS hit-testing are unaffected — only the paint compositing changes. */
 .lpa-highlight-layer {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  pointer-events: none; /* individual highlight rects re-enable it */
+  pointer-events: none;
   z-index: 1;
   mix-blend-mode: multiply;
   user-select: none;
   -webkit-user-select: none;
 }
+
 .lpa-highlight {
-  /* Fallbacks; the renderer overrides these per-mark from the mark's own color.
-     All three are the SAME hue at rising alpha — emphasis never shifts hue. */
   --lpa-hl-color-active: rgba(251, 247, 25, 0.74);
   --lpa-hl-color-active-gloss: rgba(251, 247, 25, 0.56);
   --lpa-hl-color-active-bridge: rgba(251, 247, 25, 0.37);
   position: absolute;
-  /* Visual only: clicks are hit-tested in JS so highlights never block text
-     selection (the text layer stays on top). */
   pointer-events: none;
   background: var(--lpa-hl-color, rgba(251, 247, 25, 0.52));
   border-radius: 2px;
   opacity: 1;
   outline: none;
   box-shadow: none;
-  /* Gentle + responsive. A solid → solid colour fade is smoothly interpolable
-     (a gradient swap would flash), so engaging a passage just deepens the ink. */
   transition: background-color 140ms ease;
 }
-/* Hover and active are ONE visual language: the same marker hue, simply more
-   present (denser ink over the white paper). "Selected" is the persistent form
-   of "hover" — no separate grey/blue/system selection colour, no brightness or
-   saturation filter, no outline ring. */
+
 .lpa-highlight.is-hover,
 .lpa-highlight.is-active {
   background: var(--lpa-hl-color-active);
 }
-/* Run shape: round only the OUTER corners of a multi-line passage and square the
-   inner edges, so the lines read as one continuous chunk rather than a stack of
-   pills. Applies whenever the passage is engaged (hover or active alike). */
+
 .lpa-highlight.is-hover.lpa-run-single,
 .lpa-highlight.is-active.lpa-run-single {
   border-radius: 4px;
 }
+
 .lpa-highlight.is-hover.lpa-run-first,
 .lpa-highlight.is-active.lpa-run-first {
   border-radius: 4px 4px 2px 2px;
 }
+
 .lpa-highlight.is-hover.lpa-run-middle,
 .lpa-highlight.is-active.lpa-run-middle {
   border-radius: 2px;
 }
+
 .lpa-highlight.is-hover.lpa-run-last,
 .lpa-highlight.is-active.lpa-run-last {
   border-radius: 2px 2px 4px 4px;
 }
-/* Same-hue continuity bridges fill the inter-line leading so a multi-line
-   passage is one elegant entity — no outlines, rings, or per-line boxes. */
+
 .lpa-highlight.is-hover.lpa-run-first:not(.lpa-run-single)::before,
 .lpa-highlight.is-active.lpa-run-first:not(.lpa-run-single)::before,
 .lpa-highlight.is-hover.lpa-run-middle::before,
@@ -878,32 +963,32 @@
   pointer-events: none;
   background: var(--lpa-hl-color-active-bridge);
 }
+
 .lpa-highlight.is-hover.lpa-run-first:not(.lpa-run-single)::before,
 .lpa-highlight.is-active.lpa-run-first:not(.lpa-run-single)::before {
   bottom: -3px;
   height: 4px;
 }
+
 .lpa-highlight.is-hover.lpa-run-middle::before,
 .lpa-highlight.is-active.lpa-run-middle::before {
   top: -3px;
   bottom: -3px;
 }
+
 .lpa-highlight.is-hover.lpa-run-last::before,
 .lpa-highlight.is-active.lpa-run-last::before {
   top: -3px;
   height: 4px;
 }
+
 .lpa-highlight.lpa-flash {
   animation: lpa-flash 1.1s ease;
 }
+
 @keyframes lpa-flash {
-  0%,
-  100% {
-    filter: none;
-  }
-  30% {
-    filter: saturate(1.15) brightness(0.96);
-  }
+  0%, 100% { filter: none; }
+  30% { filter: saturate(1.15) brightness(0.96); }
 }
 
 .lpa-note-layer {
@@ -914,6 +999,7 @@
   user-select: none;
   -webkit-user-select: none;
 }
+
 .lpa-page-tag {
   position: absolute;
   display: inline-flex;
@@ -934,6 +1020,7 @@
   transition: opacity 250ms ease, border-color 250ms ease, background-color 250ms ease, box-shadow 250ms ease;
   cursor: pointer;
 }
+
 .lpa-page-tag:hover,
 .lpa-page-tag.is-hover,
 .lpa-page-tag.is-active,
@@ -943,10 +1030,12 @@
   background: color-mix(in srgb, var(--background-primary) 94%, transparent);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
+
 .lpa-page-tag.is-active,
 .lpa-page-tag.is-pinned {
   border-left-color: var(--interactive-accent);
 }
+
 .lpa-tag-dot {
   width: 3px;
   height: 3px;
@@ -954,6 +1043,7 @@
   background: var(--lpa-accent, currentColor);
   flex: 0 0 auto;
 }
+
 .lpa-tag-preview {
   min-width: 0;
   overflow: hidden;
@@ -965,16 +1055,14 @@
   color: var(--text-muted);
 }
 
-/* ===== Decorative (non-fill) mark styles ===================================
-   The element spans the line's text box; the stroke is drawn by ::after at a
-   consistent offset, with weight + dash geometry passed in as CSS vars so they
-   stay consistent and scale with zoom. */
+/* ===== Decorative (non-fill) mark styles =================================== */
 .lpa-highlight.lpa-mark {
   background: transparent;
   border-radius: 2px;
   box-sizing: border-box;
   outline: none;
 }
+
 .lpa-mark--underline::after,
 .lpa-mark--dashed::after,
 .lpa-mark--dotted::after,
@@ -983,32 +1071,29 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 1px; /* below descenders → never collides with g/y/p */
+  bottom: 1px;
   height: var(--lpa-w, 2px);
   background: var(--lpa-deco, var(--lpa-ink, currentColor));
   border-radius: var(--lpa-w, 2px);
 }
+
 .lpa-mark--strike::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  top: 56%; /* through the x-height, not the descenders */
+  top: 56%;
   height: var(--lpa-w, 2px);
   transform: translateY(-50%);
   background: var(--lpa-deco, var(--lpa-ink, currentColor));
   border-radius: var(--lpa-w, 2px);
 }
+
 .lpa-mark--box {
   border: var(--lpa-w, 2px) solid var(--lpa-ink, currentColor);
   border-radius: 3px;
 }
 
-/* Emphasis for decorative marks: one language for hover and active alike — a
-   restrained same-hue wash (the stroke keeps its own ink), never an outline
-   ring, so an engaged underline doesn't masquerade as a box. The wash sits in
-   the multiply layer, so it tints the paper behind the glyphs without dimming
-   them. */
 .lpa-highlight.lpa-mark.is-hover,
 .lpa-highlight.lpa-mark.is-active {
   outline-color: transparent;
@@ -1029,20 +1114,24 @@
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
 }
+
 .lpa-mark-popover .lpa-styles,
 .lpa-mark-popover .lpa-swatches {
   gap: 4px;
 }
+
 .lpa-popover-actions {
   display: flex;
   gap: 6px;
 }
+
 .lpa-popover-actions button {
   flex: 1;
   font-size: 12px;
   padding: 3px 8px;
   cursor: pointer;
 }
+
 .lpa-popover-actions .lpa-danger {
   color: var(--text-error);
 }
@@ -1070,15 +1159,18 @@
     background-color 140ms ease,
     box-shadow 170ms ease;
 }
+
 .lpa-rubber-handle.is-left {
   transform-origin: right center;
 }
+
 .lpa-rubber-handle.is-visible {
   opacity: calc(0.34 + (var(--lpa-rubber-tension) * 0.56));
   box-shadow:
     0 0 0 calc(var(--lpa-rubber-tension) * 4px) color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 14%, transparent),
     0 1px 5px rgba(0, 0, 0, 0.16);
 }
+
 .lpa-rubber-handle::before {
   content: "";
   position: absolute;
@@ -1092,6 +1184,7 @@
     color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 88%, transparent);
   transition: height 70ms linear;
 }
+
 .lpa-rubber-handle::after {
   content: "";
   position: absolute;
@@ -1105,9 +1198,11 @@
   opacity: var(--lpa-rubber-tension);
   pointer-events: none;
 }
+
 .lpa-rubber-handle.is-snapped {
   animation: lpa-rubber-snap 260ms cubic-bezier(0.2, 0.9, 0.18, 1);
 }
+
 @keyframes lpa-rubber-snap {
   0% { filter: none; }
   34% { filter: saturate(1.18); }
@@ -1134,10 +1229,12 @@
   animation: lpa-selection-pop 280ms cubic-bezier(0.17, 0.86, 0.24, 1.18) forwards;
   user-select: none;
 }
+
 .lpa-selection-popover.is-left {
   --lpa-pop-in-x: 7px;
   transform-origin: right center;
 }
+
 @keyframes lpa-selection-pop {
   0% {
     opacity: 0;
@@ -1152,6 +1249,7 @@
     transform: translateX(0) scaleX(1);
   }
 }
+
 .lpa-selection-swatches {
   display: flex;
   align-items: center;
@@ -1159,11 +1257,13 @@
   padding-right: 4px;
   border-right: 0.5px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
 }
+
 .lpa-selection-popover .lpa-swatch {
   width: 13px;
   height: 13px;
   border-width: 1.5px;
 }
+
 .lpa-selection-action {
   height: 20px;
   padding: 0 7px;
@@ -1176,22 +1276,23 @@
   cursor: pointer;
   white-space: nowrap;
 }
+
 .lpa-selection-action:hover {
   color: var(--text-normal);
   border-color: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 34%, transparent);
   background: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 9%, transparent);
 }
+
 .lpa-selection-action-primary {
   color: var(--text-normal);
   background: color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 13%, transparent);
 }
+
 .lpa-selection-action-quiet {
   color: var(--text-faint);
 }
 
-/* ===== pdf.js text layer (selection) =======================================
-   Text is rendered transparent on top of the canvas so the user can select it;
-   the browser's native ::selection paints the highlight while dragging. */
+/* ===== pdf.js text layer (selection) ======================================= */
 .lpa-text-layer {
   position: absolute;
   top: 0;
@@ -1210,6 +1311,7 @@
   user-select: text;
   -webkit-user-select: text;
 }
+
 .lpa-text-layer span,
 .lpa-text-layer br {
   color: transparent;
@@ -1220,11 +1322,12 @@
   user-select: text;
   -webkit-user-select: text;
 }
+
 .lpa-text-layer ::selection {
   background: rgba(64, 120, 255, 0.35);
   color: transparent;
 }
-/* pdf.js end-of-content sentinel */
+
 .lpa-text-layer .endOfContent {
   display: block;
   position: absolute;
@@ -1233,6 +1336,7 @@
   cursor: default;
   user-select: none;
 }
+
 .lpa-text-layer.lpa-selecting .endOfContent {
   top: 0;
 }
@@ -1242,6 +1346,7 @@
   color: var(--text-muted);
   text-align: center;
 }
+
 .lpa-status.lpa-error {
   color: var(--text-error);
   white-space: pre-wrap;
@@ -1275,6 +1380,7 @@
     opacity 250ms ease,
     box-shadow 250ms ease;
 }
+
 .lpa-margin-card::before {
   content: "";
   position: absolute;
@@ -1287,6 +1393,7 @@
   box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 65%, transparent);
   pointer-events: none;
 }
+
 .lpa-margin-card.is-folded:not(.is-hover):not(.is-active):not(.is-pinned):not(:hover)::after {
   content: "\2026";
   position: absolute;
@@ -1307,70 +1414,87 @@
   );
   pointer-events: none;
 }
+
 .lpa-margin-left .lpa-margin-card {
   left: auto;
   right: 7px;
 }
+
 .lpa-margin-right .lpa-margin-card {
   left: 7px;
   right: auto;
 }
+
 .lpa-margin.is-collapsed .lpa-margin-card {
   opacity: 0;
   pointer-events: none;
 }
+
 .lpa-margin.is-collapsed .lpa-margin-card--tag {
   animation: none;
 }
+
 .lpa-margin.is-tight .lpa-margin-card {
   width: calc(100% - 6px);
   max-height: var(--lpa-card-density-height, var(--lpa-card-folded-height, 50px));
   padding: 11px 5px 5px;
   border-radius: 3px;
 }
+
 .lpa-margin.is-tight .lpa-margin-card::before {
   top: 4px;
   left: 5px;
   right: 5px;
   height: 3px;
 }
+
 .lpa-margin-left.is-tight .lpa-margin-card {
   right: 3px;
 }
+
 .lpa-margin-right.is-tight .lpa-margin-card {
   left: 3px;
 }
+
 .lpa-margin.is-compact .lpa-margin-card {
   width: min(calc(100% - 10px), var(--lpa-card-max, 132px));
   max-height: var(--lpa-card-density-height, var(--lpa-card-folded-height, 54px));
   padding: 12px 6px 6px;
 }
+
 .lpa-margin.is-compact .lpa-margin-card::before {
   left: 6px;
   right: 6px;
 }
+
 .lpa-margin-left.is-compact .lpa-margin-card {
   right: 5px;
 }
+
 .lpa-margin-right.is-compact .lpa-margin-card {
   left: 5px;
 }
+
 .lpa-margin.is-roomy .lpa-margin-card {
   max-height: var(--lpa-card-density-height, var(--lpa-card-folded-height, 66px));
   padding: 14px 8px 7px;
 }
+
 .lpa-margin.is-roomy .lpa-margin-card::before,
 .lpa-margin.is-spacious .lpa-margin-card::before {
   left: 8px;
   right: 8px;
 }
+
 .lpa-margin.is-spacious .lpa-margin-card {
   max-height: var(--lpa-card-density-height, var(--lpa-card-folded-height, 78px));
 }
+
 .lpa-margin-card--tag {
   opacity: 0;
   animation: lpa-card-materialize 250ms ease 100ms forwards;
 }
+
 .lpa-margin-card.is-hover,
 .lpa-margin-card.is-active,
 .lpa-margin-card.is-pinned,
@@ -1389,24 +1513,23 @@
     inset 0 0 0 1px color-mix(in srgb, var(--background-modifier-border-hover, var(--background-modifier-border)) 55%, transparent),
     0 2px 7px rgba(0, 0, 0, 0.12);
 }
+
 .lpa-margin-card.is-pinned::before {
   height: 5px;
 }
+
 .lpa-margin-card.is-active {
   z-index: 9;
 }
+
 .lpa-margin.is-tight .lpa-margin-card.is-hover,
 .lpa-margin.is-tight .lpa-margin-card.is-active,
 .lpa-margin.is-tight .lpa-margin-card.is-pinned,
-.lpa-margin.is-tight .lpa-margin-card:hover {
-  max-height: calc(100% - 16px);
-}
+.lpa-margin.is-tight .lpa-margin-card:hover,
 .lpa-margin.is-compact .lpa-margin-card.is-hover,
 .lpa-margin.is-compact .lpa-margin-card.is-active,
 .lpa-margin.is-compact .lpa-margin-card.is-pinned,
-.lpa-margin.is-compact .lpa-margin-card:hover {
-  max-height: calc(100% - 16px);
-}
+.lpa-margin.is-compact .lpa-margin-card:hover,
 .lpa-margin.is-roomy .lpa-margin-card.is-hover,
 .lpa-margin.is-roomy .lpa-margin-card.is-active,
 .lpa-margin.is-roomy .lpa-margin-card.is-pinned,
@@ -1417,6 +1540,7 @@
 .lpa-margin.is-spacious .lpa-margin-card:hover {
   max-height: calc(100% - 16px);
 }
+
 .lpa-body.is-scrolling .lpa-margin-card {
   transition:
     width 120ms ease,
@@ -1426,18 +1550,22 @@
     opacity 120ms ease,
     box-shadow 120ms ease;
 }
+
 .lpa-card-flash {
   animation: lpa-card-flash 1s ease;
 }
+
 @keyframes lpa-card-materialize {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
 @keyframes lpa-card-flash {
   30% {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 45%, transparent);
   }
 }
+
 .lpa-margin-card-head {
   display: flex;
   align-items: center;
@@ -1445,6 +1573,7 @@
   min-height: 12px;
   margin-bottom: 3px;
 }
+
 .lpa-margin-dot {
   width: 4px;
   height: 4px;
@@ -1452,12 +1581,14 @@
   background: var(--lpa-accent, currentColor);
   flex: 0 0 auto;
 }
+
 .lpa-margin-page {
   font-family: var(--font-monospace);
   font-size: 8.8px;
   line-height: 1;
   color: color-mix(in srgb, var(--text-muted) 82%, var(--lpa-accent, var(--interactive-accent)));
 }
+
 .lpa-pin-btn {
   margin-left: auto;
   width: 15px;
@@ -1472,15 +1603,18 @@
   cursor: pointer;
   transition: opacity 200ms ease, color 200ms ease;
 }
+
 .lpa-margin-card:hover .lpa-pin-btn,
 .lpa-margin-card.is-hover .lpa-pin-btn,
 .lpa-margin-card.is-active .lpa-pin-btn {
   opacity: 0.4;
 }
+
 .lpa-margin-card.is-pinned .lpa-pin-btn {
   opacity: 0.85;
   color: var(--interactive-accent);
 }
+
 .lpa-margin-note,
 .lpa-margin-side-note {
   display: block;
@@ -1498,31 +1632,38 @@
   overflow: hidden;
   field-sizing: content;
 }
+
 .lpa-margin.is-tight .lpa-margin-note {
   min-height: 18px;
   font-size: 9.6px;
   line-height: 1.18;
 }
+
 .lpa-margin.is-compact .lpa-margin-note {
   min-height: 17px;
   font-size: 10.2px;
   line-height: 1.22;
 }
+
 .lpa-margin.is-roomy .lpa-margin-note {
   min-height: 30px;
 }
+
 .lpa-margin.is-spacious .lpa-margin-note {
   min-height: 42px;
 }
+
 .lpa-margin-note:focus,
 .lpa-margin-side-note:focus {
   outline: none;
   box-shadow: none;
 }
+
 .lpa-margin-note::placeholder,
 .lpa-margin-side-note::placeholder {
   color: color-mix(in srgb, var(--text-faint) 78%, var(--lpa-accent, var(--interactive-accent)));
 }
+
 .lpa-margin-source {
   margin-top: 3px;
   padding-top: 3px;
@@ -1533,16 +1674,20 @@
   max-height: 24px;
   overflow: hidden;
 }
+
 .lpa-margin.is-tight .lpa-margin-source,
 .lpa-margin.is-compact .lpa-margin-source {
   max-height: 18px;
 }
+
 .lpa-margin.is-roomy .lpa-margin-source {
   max-height: 34px;
 }
+
 .lpa-margin.is-spacious .lpa-margin-source {
   max-height: 46px;
 }
+
 .lpa-margin-card.is-hover .lpa-margin-source,
 .lpa-margin-card.is-active .lpa-margin-source,
 .lpa-margin-card.is-pinned .lpa-margin-source,
@@ -1550,6 +1695,7 @@
   max-height: none;
   overflow: visible;
 }
+
 .lpa-margin-side-note {
   margin-top: 4px;
   padding-top: 4px;
@@ -1559,9 +1705,11 @@
   color: color-mix(in srgb, var(--text-muted) 82%, var(--lpa-accent, var(--interactive-accent)));
   transition: max-height 400ms cubic-bezier(0.25, 0.1, 0.25, 1), opacity 300ms ease 50ms;
 }
+
 .lpa-margin.is-tight .lpa-margin-side-note {
   display: block;
 }
+
 .lpa-margin-card.is-hover .lpa-margin-side-note,
 .lpa-margin-card.is-active .lpa-margin-side-note,
 .lpa-margin-card.is-pinned .lpa-margin-side-note,
@@ -1569,6 +1717,7 @@
   opacity: 1;
   max-height: none;
 }
+
 .lpa-connection-line {
   fill: none;
   stroke-linecap: round;
@@ -1576,35 +1725,44 @@
   opacity: 0.18;
   transition: opacity 300ms ease, stroke-width 300ms ease, stroke-dashoffset 300ms ease-out;
 }
+
 .lpa-body.is-scrolling .lpa-connection-line,
 .lpa-body.is-scrolling .lpa-connection-dot {
   transition: none;
 }
+
 .lpa-connection-line.is-hover {
   stroke-width: 1.2px;
   opacity: 0.5;
 }
+
 .lpa-connection-line.is-pinned {
   stroke-width: 0.9px;
   opacity: 0.35;
 }
+
 .lpa-connection-line--tag {
   stroke-width: 0.8px;
   opacity: 0.4;
 }
+
 .lpa-connection-line--tag.is-pinned {
   stroke-dasharray: 3 3;
 }
+
 .lpa-connection-dot {
   opacity: 0.18;
   transition: opacity 300ms ease, r 300ms ease;
 }
+
 .lpa-connection-dot.is-hover {
   opacity: 0.5;
 }
+
 .lpa-connection-dot.is-pinned {
   opacity: 0.35;
 }
+
 /* Style-aware chip: encodes both color and style at a glance. */
 .lpa-annotation-color.lpa-mark-chip {
   width: 15px;
@@ -1613,32 +1771,39 @@
   box-shadow: none;
   flex: 0 0 auto;
 }
+
 .lpa-mark-chip.lpa-mark--highlight {
   background: var(--lpa-fill);
 }
+
 .lpa-mark-chip.lpa-mark--box {
   border: 1.5px solid var(--lpa-ink);
 }
+
 .lpa-mark-chip.lpa-mark--underline,
 .lpa-mark-chip.lpa-mark--dashed,
 .lpa-mark-chip.lpa-mark--dotted,
 .lpa-mark-chip.lpa-mark--comment {
   background: color-mix(in srgb, var(--lpa-ink) 10%, transparent);
 }
+
 .lpa-mark-chip.lpa-mark--underline { border-bottom: 2px solid var(--lpa-ink); }
 .lpa-mark-chip.lpa-mark--dashed { border-bottom: 2px dashed var(--lpa-ink); }
 .lpa-mark-chip.lpa-mark--dotted { border-bottom: 2px dotted var(--lpa-ink); }
 .lpa-mark-chip.lpa-mark--comment {
   border-bottom: 2px dotted color-mix(in srgb, var(--lpa-ink) 55%, transparent);
 }
+
 .lpa-mark-chip.lpa-mark--strike {
   background: linear-gradient(var(--lpa-ink), var(--lpa-ink)) center / 100% 2px no-repeat;
 }
+
 .lpa-annotation-actions {
   margin-left: auto;
   display: flex;
   gap: 4px;
 }
+
 .lpa-annotation-text {
   color: var(--text-normal);
   font-size: 13px;
@@ -1646,6 +1811,7 @@
   cursor: pointer;
   white-space: normal;
 }
+
 .lpa-annotation-note {
   width: 100%;
   margin-top: 7px;

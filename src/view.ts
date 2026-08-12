@@ -1,16 +1,16 @@
 /**
- * view.ts — PdfAnnotatorView: a FileView that renders a PDF as a vertical,
- * scrollable column of pages using our OWN bundled pdf.js (see pdf-engine.ts),
- * with persistent text-highlight annotations stored in a sidecar file.
- *
- * Layers per page (z-order): canvas (raster) < highlight layer (visual only) <
- * text layer (selectable). Highlight geometry is stored in PDF user space and
- * re-projected to the current viewport on every render, so it tracks zoom and
- * resize. Highlight clicks are hit-tested in JS so they never block text
- * selection.
+ * view.ts — PDF Annotator custom view ("pdf-annotator").
  */
-import { FileView, TFile, WorkspaceLeaf, Notice, Menu } from "obsidian";
-import { pdfjsLib, initPdfEngine, getPdfEngineStatus, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
+import {
+  App,
+  Menu,
+  Notice,
+  TFile,
+  View,
+  WorkspaceLeaf,
+  setIcon,
+} from "obsidian";
+import { pdfjsLib, initPdfEngine, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
 import {
   AnnotationStore,
   DEFAULT_COLOR,
@@ -38,485 +38,172 @@ import {
   syncMarginCardPresentation,
 } from "./margin-card";
 
-export const VIEW_TYPE_PDF_ANNOTATOR = "local-pdf-annotator-view";
+export const VIEW_TYPE_PDF_ANNOTATOR = "pdf-annotator";
 
-const MIN_SCALE = 0.25;
-const MAX_SCALE = 6;
-const ZOOM_STEP = 1.2;
-const DEFAULT_SCALE = 1.25;
-const PREFETCH_MARGIN = "1000px";
 const MAX_HIGHLIGHT_ALPHA = 0.46;
-const MIN_INTERACTION_MARGIN = 96;
-const COLLAPSED_MARGIN_RAIL = 22;
-const MAX_READING_MARGIN = 286;
-const ACTIVE_RUN_CLASSES = ["lpa-run-single", "lpa-run-first", "lpa-run-middle", "lpa-run-last"] as const;
-const RUBBER_HANDLE_FEEL = {
-  INTENT_RADIUS: 28,
-  DWELL_MS: 560,
-  DECAY_MS: 250,
-  SNAP_THRESHOLD: 1,
-  CLOSE_DELAY: 180,
-  SAFE_CORRIDOR_PAD: 22,
-  REST_WIDTH: 4,
-  ACTIVE_WIDTH: 7,
-} as const;
 
-interface Size {
+interface PageGeom {
+  vp1: any;
   w: number;
   h: number;
 }
 
-interface PageView {
-  index: number;
-  el: HTMLElement;
-  hlLayer: HTMLElement;
-  noteLayer: HTMLElement;
-  canvas: HTMLCanvasElement | null;
-  textLayerEl: HTMLElement | null;
-  page: any | null;
-  rendered: boolean;
-  rendering: boolean;
-  renderTask: any | null;
-  textTask: any | null;
-}
-
-interface HighlightPaintRect {
+interface BaseRect {
   left: number;
   top: number;
   right: number;
   bottom: number;
+}
+
+interface PaintRect extends BaseRect {
   color: string;
   order: number;
   ids: Set<string>;
   notes: Set<string>;
 }
 
-interface AnnotationAnchor {
+interface LineMetrics {
+  weight: number;
+  dash: number;
+  dashGap: number;
+  dot: number;
+  dotGap: number;
+}
+
+interface PageBox {
+  idx: number;
+  pageEl: HTMLElement;
+  box: DOMRect;
+}
+
+interface MarginAnchor {
   side: "left" | "right";
   sourceX: number;
   sourceY: number;
   idealY: number;
   pageTopY: number;
   pageBottomY: number;
-  sourceWidth: number;
-  sourceHeight: number;
   pageLeftX: number;
   pageRightX: number;
 }
 
-interface SelectionActionAnchor {
-  x: number;
-  y: number;
-  height: number;
-  side: "left" | "right";
+interface RailEntry {
+  h: Highlight;
+  anchor: MarginAnchor;
 }
 
-interface PendingSelection {
-  text: string;
-  byPage: Map<number, PdfRect[]>;
-  anchor: SelectionActionAnchor;
-}
-
-interface MarginGeometry {
-  leftWidth: number;
-  rightWidth: number;
-  pageLeftX: number;
-  pageRightX: number;
-}
-
-export class PdfAnnotatorView extends FileView {
-  private rootEl!: HTMLElement;
-  private toolbarEl!: HTMLElement;
-  private titleEl!: HTMLElement;
-  private zoomOutBtnEl!: HTMLButtonElement;
-  private zoomLabelEl!: HTMLElement;
-  private zoomInBtnEl!: HTMLButtonElement;
-  private statusDotEl!: HTMLElement;
-  private bodyEl!: HTMLElement;
-  private pagesEl!: HTMLElement;
-  private leftMarginEl!: HTMLElement;
-  private rightMarginEl!: HTMLElement;
-  private leftMarginToggleEl!: HTMLButtonElement;
-  private rightMarginToggleEl!: HTMLButtonElement;
-  private connectionSvg!: SVGSVGElement;
-  private annotationCountEl!: HTMLElement;
-  private tagModeBtnEl!: HTMLButtonElement;
-  private annotationsBtnEl!: HTMLButtonElement;
-  private rollEl!: HTMLElement;
-  private rollMetaEl!: HTMLElement;
-  private rollSearchEl!: HTMLInputElement;
-  private rollListEl!: HTMLElement;
-  private swatchEls: HTMLElement[] = [];
-  private styleBtnEls: HTMLElement[] = [];
-
+export class PdfAnnotatorView extends View {
+  file: TFile | null = null;
+  private store: AnnotationStore | null = null;
   private pdfDoc: any | null = null;
   private pdfWorker: any | null = null;
-  private store: AnnotationStore | null = null;
+  private geoms = new Map<number, PageGeom>();
+  private geomPromises = new Map<number, Promise<PageGeom | null>>();
+  private observer: MutationObserver | null = null;
+  private syncQueued = false;
+  private cleanups: Array<() => void> = [];
+
   private currentColor = DEFAULT_COLOR;
   private currentStyle: MarkStyle = "highlight";
-  private markPopoverCleanup: (() => void) | null = null;
+  private tagMode = false;
 
-  private pageViews: PageView[] = [];
-  private pageSizes: (Size | null)[] = [];
-  private defaultSize: Size = { w: 612, h: 792 };
-  private scale = DEFAULT_SCALE;
+  private pendingSelection: { text: string; byPage: Map<number, PdfRect[]> } | null = null;
+  private selectionPopoverEl: HTMLElement | null = null;
+  private editPopoverCleanup: (() => void) | null = null;
 
-  private io: IntersectionObserver | null = null;
-  private visible = new Set<number>();
-  private renderEpoch = 0;
-  private loadToken = 0;
-  private activeHighlightId: string | null = null;
-  private hoverHighlightId: string | null = null;
-  private tagPlacementMode = false;
-  private rollOpen = false;
-  private rollSearchQuery = "";
-  private marginLayoutRaf: number | null = null;
-  private marginResizeObserver: ResizeObserver | null = null;
-  private marginGeometry: MarginGeometry = { leftWidth: 0, rightWidth: 0, pageLeftX: 0, pageRightX: 0 };
+  private tagBtn: HTMLButtonElement | null = null;
+  private listBtn: HTMLButtonElement | null = null;
+  private countEl: HTMLElement | null = null;
+  private listPanelEl: HTMLElement | null = null;
+  private listSearchQuery = "";
+
+  private marginsEl: HTMLElement | null = null;
+  private leftRailEl: HTMLElement | null = null;
+  private rightRailEl: HTMLElement | null = null;
+  private connectionSvg: SVGSVGElement | null = null;
+  private railResizeObserver: ResizeObserver | null = null;
+  private scroller: HTMLElement | null = null;
+  private railScrollTarget: HTMLElement | null = null;
+  private readonly railScrollHandler = () => this.onScroll();
+  private railWidths = { left: 0, right: 0 };
+  private railRaf: number | null = null;
+  private pointerRaf: number | null = null;
+  private lastPointer: { x: number; y: number; pageEl: HTMLElement | null } | null = null;
+  private hoverId: string | null = null;
+  private activeId: string | null = null;
   private hoverClearTimer: number | null = null;
   private scrollSettleTimer: number | null = null;
-  private rollScrollRaf: number | null = null;
-  private rollScrollVelocity = 0;
-  private lastVisibleKey = "";
-  private pendingSelection: PendingSelection | null = null;
-  private rubberHandle: RubberHandle | null = null;
-  private selectionPopoverEl: HTMLElement | null = null;
-  private collapsedMargins: Record<"left" | "right", boolean> = { left: false, right: false };
 
   constructor(
     leaf: WorkspaceLeaf,
-    private getAnnotationPathOptions: () => AnnotationPathOptions = () => ({}),
-    private bundleManager?: PdfBundleManager
+    private getAnnotationPathOptions: () => AnnotationPathOptions,
+    private bundleManager?: PdfBundleManager,
+    private getPaletteColors?: () => string[],
+    private getWrapWithMark?: () => boolean
   ) {
     super(leaf);
-    this.navigation = true;
-    this.allowNoFile = false;
+    const activePalette = this.getActivePalette();
+    if (activePalette.length > 0) {
+      this.currentColor = activePalette[0].fill;
+    }
   }
 
   getViewType(): string {
     return VIEW_TYPE_PDF_ANNOTATOR;
   }
-  getIcon(): string {
-    return "highlighter";
-  }
+
   getDisplayText(): string {
     return this.file ? this.file.basename : "PDF Annotator";
   }
-  canAcceptExtension(extension: string): boolean {
-    return extension === "pdf";
+
+  getIcon(): string {
+    return "highlighter";
   }
 
-  async onOpen(): Promise<void> {
-    initPdfEngine();
-    this.buildSkeleton();
-    this.rubberHandle = new RubberHandle(this.contentEl.ownerDocument);
-    this.rubberHandle.onSnap(() => this.openSelectionActionPopup());
-    this.rubberHandle.onRequestClose(() => this.closeSelectionActionPopup());
-    // Capture text selections / highlight clicks. Auto-removed on unload.
-    this.registerDomEvent(this.rootEl, "pointerdown", (evt) => this.onRootPointerDown(evt as PointerEvent));
-    this.registerDomEvent(this.contentEl.ownerDocument, "pointerdown", (evt) => this.onDocumentPointerDown(evt as PointerEvent));
-    this.registerDomEvent(this.contentEl.ownerDocument, "selectionchange", () => this.onDocumentSelectionChange());
-    this.registerDomEvent(this.pagesEl, "mouseup", (evt) => this.onMouseUp(evt));
-    this.registerDomEvent(this.pagesEl, "click", (evt) => this.onPagesClick(evt));
-    this.registerDomEvent(this.pagesEl, "mousemove", (evt) => this.onPageMouseMove(evt));
-    this.registerDomEvent(this.pagesEl, "mouseleave", () => this.clearHoveredHighlightSoon());
-    this.registerDomEvent(this.pagesEl, "scroll", () => this.onPdfScroll());
-    this.registerDomEvent(this.pagesEl, "wheel", (evt) => this.onPdfWheel(evt as WheelEvent));
-    this.registerDomEvent(this.contentEl.ownerDocument, "keydown", (evt) => this.onDocumentKeyDown(evt as KeyboardEvent));
-    this.registerDomEvent(this.rollListEl, "wheel", (evt) => this.onRollWheel(evt as WheelEvent));
-    this.registerDomEvent(window, "resize", () => this.scheduleMarginLayout());
-    this.marginResizeObserver = new ResizeObserver(() => this.scheduleMarginLayout());
-    this.marginResizeObserver.observe(this.bodyEl);
-    this.marginResizeObserver.observe(this.pagesEl);
-    this.register(() => {
-      this.marginResizeObserver?.disconnect();
-      this.marginResizeObserver = null;
-      this.stopRollScroll();
-      this.rubberHandle?.destroy();
-      this.rubberHandle = null;
+  private getActivePalette(): Array<{ name: string; fill: string; ink: string }> {
+    const customColors = this.getPaletteColors ? this.getPaletteColors() : [];
+    if (!customColors || customColors.length === 0) {
+      return PALETTE;
+    }
+
+    return customColors.map((color, index) => {
+      const pal = resolvePalette(color);
+      return {
+        name: pal?.name ?? `Color ${index + 1}`,
+        fill: color,
+        ink: pal?.ink ?? markInkColor(color),
+      };
     });
   }
 
-  async onClose(): Promise<void> {
-    await this.flushStore();
-    this.teardownDocument();
-  }
-
-  // ---- DOM skeleton -------------------------------------------------------
-
-  private buildSkeleton(): void {
-    const container = this.contentEl;
-    container.empty();
-    container.addClass("lpa-container");
-
-    this.rootEl = container.createDiv({ cls: "lpa-root" });
-    this.toolbarEl = this.rootEl.createDiv({ cls: "lpa-toolbar", attr: { "aria-label": "PDF annotation controls" } });
-    this.titleEl = this.toolbarEl.createSpan({ cls: "lpa-title", text: "PDF Annotator" });
-    this.zoomOutBtnEl = this.toolbarEl.createEl("button", {
-      cls: "lpa-zoom-button",
-      text: "-",
-      attr: { "aria-label": "Zoom out", title: "Zoom out" },
-    }) as HTMLButtonElement;
-    this.zoomOutBtnEl.onclick = () => this.zoomOut();
-
-    this.zoomLabelEl = this.toolbarEl.createSpan({ cls: "lpa-zoom-label", text: "125%" });
-    this.zoomLabelEl.setAttribute("role", "button");
-    this.zoomLabelEl.setAttribute("tabindex", "0");
-    this.zoomLabelEl.setAttribute("aria-label", "Reset zoom");
-    this.zoomLabelEl.setAttribute("title", "Reset zoom");
-    this.zoomLabelEl.onclick = () => this.resetZoom();
-    this.zoomLabelEl.onkeydown = (evt) => {
-      if (evt.key === "Enter" || evt.key === " ") {
-        evt.preventDefault();
-        this.resetZoom();
+  async setState(state: any, result: any): Promise<void> {
+    await super.setState(state, result);
+    if (state?.file) {
+      const file = this.app.vault.getAbstractFileByPath(state.file);
+      if (file instanceof TFile) {
+        await this.loadFile(file);
       }
-    };
-
-    this.zoomInBtnEl = this.toolbarEl.createEl("button", {
-      cls: "lpa-zoom-button",
-      text: "+",
-      attr: { "aria-label": "Zoom in", title: "Zoom in" },
-    }) as HTMLButtonElement;
-    this.zoomInBtnEl.onclick = () => this.zoomIn();
-
-    this.statusDotEl = this.toolbarEl.createSpan({ cls: "lpa-status-dot" });
-    this.annotationCountEl = this.toolbarEl.createSpan({ cls: "lpa-annotation-count", text: "0 annotations" });
-    this.swatchEls = [];
-    this.styleBtnEls = [];
-    this.setActiveColor(this.currentColor);
-    this.setActiveStyle(this.currentStyle);
-    this.refreshStatusDot();
-
-    this.tagModeBtnEl = this.toolbarEl.createEl("button", {
-      text: "Tag",
-      attr: { "aria-label": "Place a page note tag" },
-    }) as HTMLButtonElement;
-    this.tagModeBtnEl.onclick = () => this.setTagPlacementMode(!this.tagPlacementMode);
-
-    this.annotationsBtnEl = this.toolbarEl.createEl("button", {
-      text: "Annotations",
-      attr: { "aria-label": "Show searchable annotations" },
-    }) as HTMLButtonElement;
-    this.annotationsBtnEl.onclick = () => this.setRollOpen(!this.rollOpen);
-
-    this.rollEl = this.rootEl.createDiv({ cls: "lpa-roll is-hidden" });
-    const rollHead = this.rollEl.createDiv({ cls: "lpa-roll-head" });
-    rollHead.createDiv({ cls: "lpa-roll-title", text: "Annotations" });
-    this.rollMetaEl = rollHead.createDiv({ cls: "lpa-roll-meta", text: "0" });
-    this.rollSearchEl = rollHead.createEl("input", {
-      cls: "lpa-roll-search",
-      attr: { type: "search", placeholder: "Search annotations", "aria-label": "Search annotations" },
-    });
-    this.rollSearchEl.oninput = () => {
-      this.rollSearchQuery = this.rollSearchEl.value;
-      this.renderAnnotationRollList();
-    };
-    const closeRoll = rollHead.createEl("button", {
-      cls: "lpa-roll-close",
-      text: "×",
-      attr: { "aria-label": "Hide annotations" },
-    });
-    closeRoll.onclick = () => this.setRollOpen(false);
-    this.rollListEl = this.rollEl.createDiv({ cls: "lpa-roll-list" });
-
-    this.bodyEl = this.rootEl.createDiv({ cls: "lpa-body" });
-    this.leftMarginEl = this.bodyEl.createDiv({ cls: "lpa-margin lpa-margin-left", attr: { "aria-label": "Left annotations" } });
-    this.pagesEl = this.bodyEl.createDiv({ cls: "lpa-pages" });
-    this.rightMarginEl = this.bodyEl.createDiv({ cls: "lpa-margin lpa-margin-right", attr: { "aria-label": "Right annotations" } });
-    this.connectionSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    this.connectionSvg.classList.add("lpa-connection-layer");
-    this.connectionSvg.setAttribute("aria-hidden", "true");
-    this.bodyEl.appendChild(this.connectionSvg);
-    this.leftMarginToggleEl = this.createMarginToggle("left");
-    this.rightMarginToggleEl = this.createMarginToggle("right");
-    this.syncMarginCollapseState();
-    this.renderAnnotationSidebar();
-  }
-
-  private createMarginToggle(side: "left" | "right"): HTMLButtonElement {
-    const btn = this.bodyEl.createEl("button", {
-      cls: `lpa-margin-toggle lpa-margin-toggle-${side}`,
-      attr: { type: "button" },
-    }) as HTMLButtonElement;
-    btn.addEventListener("pointerdown", (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      this.setMarginCollapsed(side, !this.collapsedMargins[side]);
-    });
-    btn.onclick = (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-    };
-    return btn;
-  }
-
-  private setMarginCollapsed(side: "left" | "right", collapsed: boolean): void {
-    if (this.collapsedMargins[side] === collapsed) return;
-    this.collapsedMargins[side] = collapsed;
-    this.syncMarginCollapseState();
-    this.scheduleMarginLayout();
-  }
-
-  private syncMarginCollapseState(): void {
-    this.rootEl?.toggleClass("is-left-margin-collapsed", this.collapsedMargins.left);
-    this.rootEl?.toggleClass("is-right-margin-collapsed", this.collapsedMargins.right);
-    this.syncOneMarginCollapseState("left", this.leftMarginEl, this.leftMarginToggleEl);
-    this.syncOneMarginCollapseState("right", this.rightMarginEl, this.rightMarginToggleEl);
-  }
-
-  private syncOneMarginCollapseState(side: "left" | "right", margin?: HTMLElement, toggle?: HTMLButtonElement): void {
-    const collapsed = this.collapsedMargins[side];
-    margin?.toggleClass("is-user-collapsed", collapsed);
-    if (!toggle) return;
-    toggle.toggleClass("is-collapsed", collapsed);
-    const sideLabel = side === "left" ? "left" : "right";
-    const label = collapsed ? `Show ${sideLabel} annotation margin` : `Hide ${sideLabel} annotation margin`;
-    toggle.setText(side === "left" ? (collapsed ? "‹" : "›") : (collapsed ? "›" : "‹"));
-    toggle.setAttribute("aria-label", label);
-    toggle.setAttribute("title", label);
-    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  }
-
-  private setActiveColor(value: string): void {
-    this.currentColor = value;
-    for (const sw of this.swatchEls) sw.toggleClass("is-active", sw.dataset.color === value);
-    this.tintStylePreviews();
-  }
-
-  private setActiveStyle(style: MarkStyle): void {
-    this.currentStyle = style;
-    for (const b of this.styleBtnEls) {
-      const on = b.dataset.style === style;
-      b.toggleClass("is-active", on);
-      b.setAttribute("aria-checked", on ? "true" : "false");
     }
   }
 
-  private setTagPlacementMode(on: boolean): void {
-    this.tagPlacementMode = on;
-    this.rootEl?.toggleClass("is-tag-mode", on);
-    this.tagModeBtnEl?.toggleClass("is-active", on);
-    this.tagModeBtnEl?.setAttribute("aria-pressed", on ? "true" : "false");
+  syncPdfPath(file: TFile): void {
+    if (this.file !== file && this.file?.path !== file.path) return;
+    this.store?.setPdfPath(file.path, file.basename);
   }
 
-  private setRollOpen(on: boolean): void {
-    this.rollOpen = on;
-    this.rollEl?.toggleClass("is-hidden", !on);
-    this.annotationsBtnEl?.toggleClass("is-active", on);
-    this.annotationsBtnEl?.setAttribute("aria-pressed", on ? "true" : "false");
-    if (on) this.renderAnnotationRollList();
-  }
+  async loadFile(file: TFile): Promise<void> {
+    this.file = file;
+    this.containerEl.empty();
+    initPdfEngine();
 
-  private onRootPointerDown(evt: PointerEvent): void {
-    if (!this.isSelectionActionTarget(evt.target)) this.hideSelectionActions(false);
-    if (this.shouldPreserveActiveSelection(evt)) return;
-    this.clearActiveSelection();
-  }
+    const root = this.containerEl.createDiv({ cls: "lpa-custom-view-root" });
 
-  private onDocumentPointerDown(evt: PointerEvent): void {
-    if (!this.activeHighlightId) return;
-    const target = evt.target as HTMLElement | null;
-    if (!target) return;
-    if (this.rootEl?.contains(target)) return;
-    if (target.closest(".lpa-mark-popover, .lpa-selection-popover, .lpa-rubber-handle")) return;
-    this.clearActiveSelection();
-  }
+    const data = await this.app.vault.readBinary(file);
+    this.pdfWorker = createDedicatedWorker();
+    const params: any = { data: copyPdfDataForWorker(data), useSystemFonts: true };
+    if (this.pdfWorker) params.worker = this.pdfWorker;
+    this.pdfDoc = await pdfjsLib.getDocument(params).promise;
 
-  private shouldPreserveActiveSelection(evt: PointerEvent): boolean {
-    if (!this.activeHighlightId) return true;
-    if (evt.button !== 0) return true;
-    const target = evt.target as HTMLElement | null;
-    if (!target) return false;
-    if (target.closest(".lpa-page-tag, .lpa-margin-card, .lpa-roll-item, .lpa-mark-popover, .lpa-selection-popover, .lpa-rubber-handle")) return true;
-    if (target.closest("textarea,input,select,button,[contenteditable='true']")) return true;
-    if (target.closest(".lpa-toolbar, .lpa-roll-head")) return true;
-    return false;
-  }
-
-  private isSelectionActionTarget(target: EventTarget | null): boolean {
-    return target instanceof HTMLElement && !!target.closest(".lpa-selection-popover, .lpa-rubber-handle");
-  }
-
-  private clearActiveSelection(): void {
-    if (!this.activeHighlightId) return;
-    this.activateHighlight(null);
-    this.closeMarkPopover();
-  }
-
-  /** Paint the style-preview chips in the currently selected ink so the pen
-   * reads as "this style, this color" at a glance. */
-  private tintStylePreviews(): void {
-    const pal = resolvePalette(this.currentColor);
-    const ink = pal?.ink ?? this.currentColor;
-    const fill = pal?.fill ?? this.currentColor;
-    for (const b of this.styleBtnEls) {
-      b.style.setProperty("--lpa-ink", ink);
-      b.style.setProperty("--lpa-fill", fill);
-    }
-  }
-
-  private refreshStatusDot(): void {
-    const st = getPdfEngineStatus();
-    if (!this.statusDotEl) return;
-    this.statusDotEl.removeClasses(["is-ok", "is-error"]);
-    if (st?.ok) {
-      this.statusDotEl.setText(`pdf.js ${st.apiVersion} ✓`);
-      this.statusDotEl.setAttribute(
-        "aria-label",
-        `pdf.js ${st.apiVersion}: API & worker versions match (bundled, no conflict possible)`
-      );
-      this.statusDotEl.addClass("is-ok");
-    } else if (st) {
-      this.statusDotEl.setText(`pdf.js ${st.apiVersion} ⚠`);
-      this.statusDotEl.addClass("is-error");
-    } else {
-      this.statusDotEl.setText("");
-    }
-  }
-
-  // ---- file load / unload -------------------------------------------------
-
-  async onLoadFile(file: TFile): Promise<void> {
-    if (!this.rootEl) this.buildSkeleton();
-    this.titleEl.setText(file.basename);
-    this.refreshStatusDot();
-
-    const token = ++this.loadToken;
-    await this.flushStore();
-    this.teardownDocument();
-    this.setStatus(`Loading ${file.name}…`);
-
-    let data: ArrayBuffer;
-    try {
-      data = await this.app.vault.readBinary(file);
-    } catch (e: any) {
-      this.setError(`Could not read PDF file:\n${e?.message ?? e}`);
-      return;
-    }
-    if (token !== this.loadToken) return;
-
-    try {
-      // Dedicated worker per document (never shared) so a 2nd open PDF can't
-      // blank this one's canvas, and so we never touch Obsidian's global worker.
-      this.pdfWorker = createDedicatedWorker();
-      const params: any = { data: copyPdfDataForWorker(data), useSystemFonts: true };
-      if (this.pdfWorker) params.worker = this.pdfWorker;
-      const loadingTask = pdfjsLib.getDocument(params);
-      this.pdfDoc = await loadingTask.promise;
-    } catch (e: any) {
-      console.error(`${LOG_TAG} getDocument failed`, e);
-      this.setError(`Failed to open PDF with pdf.js:\n${e?.message ?? e}`);
-      return;
-    }
-    if (token !== this.loadToken) {
-      try { this.pdfDoc?.destroy(); } catch {}
-      try { this.pdfWorker?.destroy(); } catch {}
-      this.pdfDoc = null;
-      this.pdfWorker = null;
-      return;
-    }
-
-    // Annotation store keyed to this PDF.
     const fingerprint = Array.isArray(this.pdfDoc.fingerprints)
       ? this.pdfDoc.fingerprints[0]
       : this.pdfDoc.fingerprint;
@@ -526,20 +213,13 @@ export class PdfAnnotatorView extends FileView {
     let migrateFallback = false;
     let annotationBackupPath: string | undefined;
     if (this.bundleManager) {
-      try {
-        const binding = await this.bundleManager.prepare(file, data, fingerprint, pathOptions);
-        annotationPath = binding.annotationPath;
-        fallbackPaths = binding.fallbackAnnotationPaths;
-        migrateFallback = true;
-        annotationBackupPath = binding.annotationBackupPath;
-      } catch (e: any) {
-        console.error(`${LOG_TAG} could not prepare managed PDF bundle`, e);
-        this.setError(
-          `Could not create a verified PDF backup. Annotation mode was not opened:\n${e?.message ?? e}`
-        );
-        return;
-      }
+      const binding = await this.bundleManager.prepare(file, data, fingerprint, pathOptions);
+      annotationPath = binding.annotationPath;
+      fallbackPaths = binding.fallbackAnnotationPaths;
+      migrateFallback = true;
+      annotationBackupPath = binding.annotationBackupPath;
     }
+    const wrapWithMark = this.getWrapWithMark ? this.getWrapWithMark() : true;
     this.store = new AnnotationStore(
       this.app.vault.adapter,
       annotationPath,
@@ -548,692 +228,260 @@ export class PdfAnnotatorView extends FileView {
       fingerprint,
       fallbackPaths,
       migrateFallback,
-      annotationBackupPath
+      annotationBackupPath,
+      wrapWithMark
     );
     await this.store.load();
+    this.notifyStoreChanged();
 
-    await this.buildPages();
-    this.renderAnnotationSidebar();
+    const doc = root.ownerDocument;
+    this.listen(root, "mouseup", (evt) => this.onMouseUp(evt as MouseEvent));
+    this.listen(root, "click", (evt) => this.onClick(evt as MouseEvent));
+    this.listen(
+      root,
+      "mousemove",
+      (evt) => this.onPointerMove(evt as MouseEvent),
+      { passive: true }
+    );
+    this.listen(doc, "selectionchange", () => this.onSelectionChange());
+    this.listen(doc, "keydown", (evt) => this.onKeyDown(evt as KeyboardEvent));
+
+    this.observer = new MutationObserver((mutations) => this.onMutations(mutations));
+    this.observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-loaded"],
+    });
+
+    this.initMarginRail(root);
+    this.scheduleSync();
   }
 
-  async onUnloadFile(_file: TFile): Promise<void> {
-    await this.flushStore();
-    this.teardownDocument();
+  async onClose(): Promise<void> {
+    this.closeEditPopover();
+    this.selectionPopoverEl?.remove();
+    this.selectionPopoverEl = null;
+    this.pendingSelection = null;
+    this.closeListPanel();
+
+    this.observer?.disconnect();
+    this.observer = null;
+    for (const fn of this.cleanups.splice(0)) {
+      try {
+        fn();
+      } catch {}
+    }
+
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    if (this.railRaf !== null) win.cancelAnimationFrame(this.railRaf);
+    if (this.pointerRaf !== null) win.cancelAnimationFrame(this.pointerRaf);
+    if (this.hoverClearTimer !== null) win.clearTimeout(this.hoverClearTimer);
+    if (this.scrollSettleTimer !== null) win.clearTimeout(this.scrollSettleTimer);
+
+    this.marginsEl?.remove();
+    this.marginsEl = null;
+
+    const store = this.store;
+    this.store = null;
+    if (store) {
+      await store.flush().catch((e) => console.error(`${LOG_TAG} failed to save annotations`, e));
+    }
+    this.releasePdf();
+    this.geoms.clear();
+    this.geomPromises.clear();
   }
 
-  syncPdfPath(file: TFile): void {
-    if (this.file !== file && this.file?.path !== file.path) return;
-    this.titleEl?.setText(file.basename);
-    this.store?.setPdfPath(file.path, file.basename);
-  }
-
-  private async flushStore(): Promise<void> {
-    if (!this.store) return;
+  private releasePdf(): void {
     try {
-      await this.store.flush();
-    } catch (e) {
-      console.error(`${LOG_TAG} failed to save annotations`, e);
-    }
+      this.pdfDoc?.destroy();
+    } catch {}
+    try {
+      this.pdfWorker?.destroy();
+    } catch {}
+    this.pdfDoc = null;
+    this.pdfWorker = null;
   }
 
-  // ---- page layout + lazy render -----------------------------------------
-
-  private async buildPages(): Promise<void> {
-    if (!this.pdfDoc) return;
-    this.clearPagesDom();
-    this.pagesEl.empty();
-    this.pageViews = [];
-    this.visible.clear();
-    this.renderEpoch++;
-
-    const n: number = this.pdfDoc.numPages;
-    const p1 = await this.pdfDoc.getPage(1);
-    const base = p1.getViewport({ scale: 1 });
-    this.defaultSize = { w: base.width, h: base.height };
-    this.pageSizes = new Array(n).fill(null);
-    this.pageSizes[0] = { w: base.width, h: base.height };
-
-    this.io?.disconnect();
-    this.io = new IntersectionObserver((entries) => this.onIntersect(entries), {
-      root: this.pagesEl,
-      rootMargin: `${PREFETCH_MARGIN} 0px`,
-      threshold: 0,
-    });
-
-    for (let i = 0; i < n; i++) {
-      const el = this.pagesEl.createDiv({ cls: "lpa-page" });
-      el.dataset.index = String(i);
-      const sz = this.pageSizes[i] ?? this.defaultSize;
-      el.setCssProps({
-        width: `${Math.floor(sz.w * this.scale)}px`,
-        height: `${Math.floor(sz.h * this.scale)}px`,
-      });
-      const hlLayer = el.createDiv({ cls: "lpa-highlight-layer" });
-      const noteLayer = el.createDiv({ cls: "lpa-note-layer" });
-      const pv: PageView = {
-        index: i, el, hlLayer, noteLayer, canvas: null, textLayerEl: null,
-        page: i === 0 ? p1 : null, rendered: false, rendering: false, renderTask: null, textTask: null,
-      };
-      this.pageViews.push(pv);
-      this.io.observe(el);
-    }
-    this.updateZoomLabel();
-  }
-
-  private renderAnnotationSidebar(): void {
-    if (!this.leftMarginEl || !this.rightMarginEl || !this.annotationCountEl) return;
-    this.updateElasticMargins();
-    this.leftMarginEl.empty();
-    this.rightMarginEl.empty();
-    this.syncMarginCollapseState();
-
-    const annotations = [...(this.store?.doc.highlights ?? [])].sort(
-      (a, b) => a.page - b.page || a.created.localeCompare(b.created)
-    );
-    const ids = new Set(annotations.map((h) => h.id));
-    if (this.activeHighlightId && !ids.has(this.activeHighlightId)) this.activeHighlightId = null;
-    if (this.hoverHighlightId && !ids.has(this.hoverHighlightId)) this.hoverHighlightId = null;
-    this.annotationCountEl.setText(`${annotations.length} ${annotations.length === 1 ? "annotation" : "annotations"}`);
-
-    for (const h of annotations) {
-      const type = annotationTypeOf(h);
-      if (type === "highlight" && !highlightHasMarginCard(h)) continue;
-      const anchor = this.computeAnnotationAnchor(h);
-      if (!anchor) continue;
-      const pinned = !!h.isPinned;
-      if (type === "tag" && !pinned && this.hoverHighlightId !== h.id && this.activeHighlightId !== h.id) continue;
-
-      const margin = anchor.side === "left" ? this.leftMarginEl : this.rightMarginEl;
-      const card = this.createMarginCard(margin, h, anchor.side);
-      card.setCssProps({ top: `${Math.round(anchor.idealY)}px` });
-    }
-    this.renderAnnotationRollList();
-    this.syncHighlightBindingState();
-    this.scheduleMarginLayout();
-  }
-
-  private renderAnnotationRollList(): void {
-    if (!this.rollListEl || !this.rollMetaEl) return;
-    const annotations = [...(this.store?.doc.highlights ?? [])].sort(
-      (a, b) => a.page - b.page || a.created.localeCompare(b.created)
-    );
-    const query = normalizeSearch(this.rollSearchQuery);
-    const filtered = query
-      ? annotations.filter((h) => annotationMatchesSearch(h, query))
-      : annotations;
-
-    this.rollMetaEl.setText(
-      query
-        ? `${filtered.length}/${annotations.length}`
-        : `${annotations.length} ${annotations.length === 1 ? "annotation" : "annotations"}`
-    );
-    if (this.rollSearchEl && this.rollSearchEl.value !== this.rollSearchQuery) {
-      this.rollSearchEl.value = this.rollSearchQuery;
-    }
-
-    this.rollListEl.empty();
-    if (!this.store) {
-      this.rollListEl.createDiv({ cls: "lpa-roll-empty", text: "Open a PDF to view annotations." });
-      return;
-    }
-    if (annotations.length === 0) {
-      this.rollListEl.createDiv({ cls: "lpa-roll-empty", text: "No annotations yet." });
-      return;
-    }
-    if (filtered.length === 0) {
-      this.rollListEl.createDiv({ cls: "lpa-roll-empty", text: "No matching annotations." });
-      return;
-    }
-
-    for (const h of filtered) this.createRollItem(h);
-    this.syncHighlightBindingState();
-  }
-
-  private createRollItem(h: Highlight): HTMLElement {
-    const type = annotationTypeOf(h);
-    const pal = resolvePalette(annotationColor(h));
-    const accent = pal?.ink ?? markInkColor(annotationColor(h));
-    const item = this.rollListEl.createDiv({ cls: `lpa-roll-item lpa-roll-item--${type}` });
-    item.dataset.hlId = h.id;
-    item.dataset.annotationId = h.id;
-    item.style.setProperty("--lpa-accent", accent);
-    item.toggleClass("is-active", h.id === this.activeHighlightId);
-    item.toggleClass("is-hover", h.id === this.hoverHighlightId);
-
-    item.addEventListener("mouseenter", () => this.setHoveredHighlight(h.id));
-    item.addEventListener("mouseleave", () => this.clearHoveredHighlightSoon(h.id));
-    item.addEventListener("contextmenu", (evt) => this.openAnnotationContextMenu(evt, h.id));
-    item.onclick = () => void this.revealHighlight(h.id, { scrollSidebar: true });
-
-    const head = item.createDiv({ cls: "lpa-roll-item-head" });
-    head.createSpan({ cls: "lpa-roll-dot", attr: { "aria-hidden": "true" } });
-    head.createSpan({ cls: "lpa-roll-page", text: `p.${h.page + 1}` });
-    head.createSpan({ cls: "lpa-roll-kind", text: annotationKindLabel(h) });
-    if (h.isPinned) head.createSpan({ cls: "lpa-roll-pin", text: "pinned" });
-
-    item.createDiv({ cls: "lpa-roll-note", text: rollPrimaryText(h) });
-    const secondary = rollSecondaryText(h);
-    if (secondary) item.createDiv({ cls: "lpa-roll-source", text: secondary });
-    return item;
-  }
-
-  private createMarginCard(margin: HTMLElement, h: Highlight, side: "left" | "right"): HTMLElement {
-    const type = annotationTypeOf(h);
-    const pal = resolvePalette(annotationColor(h));
-    const accent = pal?.ink ?? markInkColor(annotationColor(h));
-    const card = margin.createDiv({ cls: `lpa-margin-card lpa-margin-card--${type}` });
-    card.dataset.hlId = h.id;
-    card.dataset.annotationId = h.id;
-    card.dataset.side = side;
-    card.style.setProperty("--lpa-accent", accent);
-    card.style.setProperty("--lpa-sticker-bg", stickerBackgroundColor(annotationColor(h), 0.34));
-    card.style.setProperty("--lpa-sticker-bg-strong", stickerBackgroundColor(annotationColor(h), 0.52));
-    card.toggleClass("is-pinned", !!h.isPinned);
-    card.toggleClass("is-active", h.id === this.activeHighlightId);
-    card.toggleClass("is-hover", h.id === this.hoverHighlightId);
-    card.toggleClass("is-expanded", !!h.isPinned || h.id === this.activeHighlightId || h.id === this.hoverHighlightId);
-
-    card.addEventListener("mouseenter", () => this.setHoveredHighlight(h.id));
-    card.addEventListener("mouseleave", () => this.clearHoveredHighlightSoon(h.id));
-    card.addEventListener("contextmenu", (evt) => this.openAnnotationContextMenu(evt, h.id));
-    card.addEventListener("click", (evt) => {
-      const target = evt.target as HTMLElement | null;
-      if (target?.closest("textarea,button")) return;
-      void this.revealHighlight(h.id, { scrollSidebar: false });
-    });
-    card.addEventListener("dblclick", (evt) => {
-      evt.preventDefault();
-      this.activateHighlight(h.id, { focusNote: true });
-    });
-    card.addEventListener("transitionend", (evt) => {
-      if (evt.propertyName === "max-height") this.scheduleMarginLayout();
-    });
-
-    const head = card.createDiv({ cls: "lpa-margin-card-head" });
-    head.createSpan({ cls: "lpa-margin-dot", attr: { "aria-hidden": "true" } });
-    head.createSpan({ cls: "lpa-margin-page", text: `p.${h.page + 1}` });
-    const pin = head.createEl("button", {
-      cls: "lpa-pin-btn",
-      text: "⌖",
-      attr: {
-        "aria-label": h.isPinned ? "Unpin annotation card" : "Pin annotation card",
-        title: h.isPinned ? "Unpin" : "Pin",
-      },
-    });
-    pin.onclick = (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      this.toggleAnnotationPin(h.id);
-    };
-
-    const note = card.createEl("textarea", {
-      cls: "lpa-margin-note",
-      attr: {
-        placeholder: type === "tag" ? "Page note" : "Note",
-        rows: "2",
-        "aria-label": type === "tag" ? "Page note" : "Annotation note",
-      },
-    });
-    note.value = h.note ?? "";
-    note.onfocus = () => this.activateHighlight(h.id);
-    note.oninput = () => {
-      this.store?.update(h.id, { note: note.value });
-      syncMarginCardPresentation(card);
-      const pv = this.pageViews[h.page];
-      if (pv?.rendered) {
-        this.renderHighlights(pv);
-        this.renderTags(pv);
-      }
-      this.renderAnnotationRollList();
-      this.scheduleMarginLayout();
-    };
-
-    if (type === "highlight") {
-      card.createDiv({ cls: "lpa-margin-source", text: marginCardSourceText(h.text) });
-    }
-
-    const sideNote = card.createEl("textarea", {
-      cls: "lpa-margin-side-note",
-      attr: { placeholder: "Side note", rows: "2", "aria-label": "Side note" },
-    });
-    sideNote.value = h.noteContentCJK ?? "";
-    sideNote.onfocus = () => this.activateHighlight(h.id);
-    sideNote.oninput = () => {
-      this.store?.update(h.id, { noteContentCJK: sideNote.value.trim() ? sideNote.value : undefined });
-      syncMarginCardPresentation(card);
-      this.renderAnnotationRollList();
-      this.scheduleMarginLayout();
-    };
-
-    syncMarginCardPresentation(card);
-    return card;
-  }
-
-  private activateHighlight(
-    id: string | null,
-    options: { scrollSidebar?: boolean; focusNote?: boolean } = {}
+  private listen(
+    target: EventTarget,
+    type: string,
+    handler: (evt: Event) => void,
+    options?: AddEventListenerOptions
   ): void {
-    const prev = this.activeHighlightId;
-    this.activeHighlightId = id;
-    if (id && !this.store?.get(id)) this.activeHighlightId = null;
-    const needsRender =
-      this.dynamicTagCardDependsOn(prev) ||
-      this.dynamicTagCardDependsOn(this.activeHighlightId) ||
-      (!!this.activeHighlightId && !this.sidebarCardFor(this.activeHighlightId));
-    if (needsRender) this.renderAnnotationSidebar();
-    this.syncHighlightBindingState();
-    if (this.activeHighlightId && options.scrollSidebar) {
-      this.scrollSidebarCard(this.activeHighlightId, !!options.focusNote);
-    } else if (this.activeHighlightId && options.focusNote) {
-      this.focusSidebarNote(this.activeHighlightId);
-    }
-    if (this.activeHighlightId && this.rollOpen) this.scrollRollItem(this.activeHighlightId);
+    target.addEventListener(type, handler, options);
+    this.cleanups.push(() => target.removeEventListener(type, handler, options));
   }
 
-  private setHoveredHighlight(id: string | null): void {
-    if (this.hoverClearTimer !== null) {
-      window.clearTimeout(this.hoverClearTimer);
-      this.hoverClearTimer = null;
-    }
-    const next = id && this.store?.get(id) ? id : null;
-    if (this.hoverHighlightId === next) return;
-    const prev = this.hoverHighlightId;
-    this.hoverHighlightId = next;
-    if (this.dynamicTagCardDependsOn(prev) || this.dynamicTagCardDependsOn(next)) {
-      this.renderAnnotationSidebar();
-    }
-    this.syncHighlightBindingState();
+  private notifyStoreChanged(): void {
+    this.updateCount();
+    if (this.listPanelEl) this.renderListItems();
+    this.scheduleRailLayout();
   }
 
-  private clearHoveredHighlightSoon(id?: string): void {
-    if (this.hoverClearTimer !== null) window.clearTimeout(this.hoverClearTimer);
-    this.hoverClearTimer = window.setTimeout(() => {
-      this.hoverClearTimer = null;
-      if (!id || this.hoverHighlightId === id) this.setHoveredHighlight(null);
-    }, 120);
+  private updateCount(): void {
+    const n = this.store?.doc.highlights.length ?? 0;
+    if (this.countEl) {
+      this.countEl.setText(String(n));
+      this.countEl.setAttribute("title", `${n} ${n === 1 ? "annotation" : "annotations"}`);
+    }
   }
 
-  private dynamicTagCardDependsOn(id: string | null): boolean {
-    if (!id) return false;
-    const h = this.store?.get(id);
-    return !!h && annotationTypeOf(h) === "tag" && !h.isPinned;
-  }
-
-  private syncHighlightBindingState(): void {
-    this.rootEl?.toggleClass("has-active-highlight", !!this.activeHighlightId);
-    if (this.bodyEl) {
-      for (const item of this.bodyEl.querySelectorAll<HTMLElement>(".lpa-margin-card")) {
-        const id = item.dataset.hlId ?? "";
-        item.toggleClass("is-active", !!id && id === this.activeHighlightId);
-        item.toggleClass("is-hover", !!id && id === this.hoverHighlightId);
-        item.toggleClass("is-expanded", !!id && (id === this.activeHighlightId || id === this.hoverHighlightId || !!this.store?.get(id)?.isPinned));
-        syncMarginCardPresentation(item);
-      }
-    }
-    if (this.rootEl) {
-      for (const item of this.rootEl.querySelectorAll<HTMLElement>(".lpa-roll-item")) {
-        const id = item.dataset.hlId ?? "";
-        item.toggleClass("is-active", !!id && id === this.activeHighlightId);
-        item.toggleClass("is-hover", !!id && id === this.hoverHighlightId);
-      }
-    }
-    if (this.pagesEl) {
-      for (const mark of this.pagesEl.querySelectorAll<HTMLElement>(".lpa-highlight")) {
-        const ids = highlightIdsForElement(mark);
-        mark.toggleClass("is-active", !!this.activeHighlightId && ids.includes(this.activeHighlightId));
-        mark.toggleClass("is-hover", !!this.hoverHighlightId && ids.includes(this.hoverHighlightId));
-      }
-      for (const tag of this.pagesEl.querySelectorAll<HTMLElement>(".lpa-page-tag")) {
-        const id = tag.dataset.hlId ?? "";
-        tag.toggleClass("is-active", !!id && id === this.activeHighlightId);
-        tag.toggleClass("is-hover", !!id && id === this.hoverHighlightId);
-        tag.toggleClass("is-pinned", !!id && !!this.store?.get(id)?.isPinned);
-      }
-      this.syncActiveRunShape();
-    }
-    this.scheduleMarginLayout();
-  }
-
-  private syncActiveRunShape(): void {
-    if (!this.pagesEl) return;
-    const marks = Array.from(this.pagesEl.querySelectorAll<HTMLElement>(".lpa-highlight"));
-    for (const mark of marks) mark.removeClasses([...ACTIVE_RUN_CLASSES]);
-    // Hover and active share one visual language: whichever passage is engaged
-    // gets the rounded-outer-corner + inter-line-bridge run shape so it reads as
-    // a single elegant chunk. Active is simply the persistent version of hover.
-    const ids: string[] = [];
-    if (this.activeHighlightId) ids.push(this.activeHighlightId);
-    if (this.hoverHighlightId && this.hoverHighlightId !== this.activeHighlightId) {
-      ids.push(this.hoverHighlightId);
-    }
-    for (const id of ids) this.applyRunShapeForId(marks, id);
-  }
-
-  /** Tag the line-rects of one highlight as a run (single / first / middle /
-   * last) so CSS can round only the outer corners and bridge the line gaps. */
-  private applyRunShapeForId(marks: HTMLElement[], id: string): void {
-    const runMarks = marks
-      .filter((mark) => !ACTIVE_RUN_CLASSES.some((c) => mark.hasClass(c)))
-      .filter((mark) => highlightIdsForElement(mark).includes(id))
-      .map((mark) => {
-        const rect = mark.getBoundingClientRect();
-        const page = Number(mark.closest<HTMLElement>(".lpa-page")?.dataset.index ?? 0);
-        return { mark, rect, page, centerY: (rect.top + rect.bottom) / 2 };
-      })
-      .filter((item) => item.rect.width > 0 && item.rect.height > 0)
-      .sort((a, b) => a.page - b.page || a.centerY - b.centerY || a.rect.left - b.rect.left);
-    if (!runMarks.length) return;
-
-    const groups: Array<typeof runMarks> = [];
-    for (const item of runMarks) {
-      const group = groups[groups.length - 1];
-      const prev = group?.[0];
-      const sameLine = !!prev && item.page === prev.page && Math.abs(item.centerY - prev.centerY) <= Math.max(4, Math.min(item.rect.height, prev.rect.height) * 0.55);
-      if (sameLine) group.push(item);
-      else groups.push([item]);
-    }
-
-    if (groups.length === 1) {
-      for (const item of groups[0]) item.mark.addClass("lpa-run-single");
+  private onMutations(mutations: MutationRecord[]): void {
+    for (const m of mutations) {
+      const target = m.target instanceof HTMLElement ? m.target : m.target.parentElement;
+      if (target?.closest(".lpa-native-margins, .lpa-native-roll, .lpa-native-controls")) continue;
+      this.scheduleSync();
       return;
     }
-    groups.forEach((group, index) => {
-      const cls = index === 0 ? "lpa-run-first" : index === groups.length - 1 ? "lpa-run-last" : "lpa-run-middle";
-      for (const item of group) item.mark.addClass(cls);
+  }
+
+  private scheduleSync(): void {
+    if (this.syncQueued) return;
+    this.syncQueued = true;
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    win.requestAnimationFrame(() => {
+      this.syncQueued = false;
+      this.syncPages();
     });
   }
 
-  private scrollSidebarCard(id: string, focusNote: boolean): void {
-    let item = this.sidebarCardFor(id);
-    if (!item) {
-      this.renderAnnotationSidebar();
-      item = this.sidebarCardFor(id);
+  private syncPages(): void {
+    if (!this.store) return;
+    const store = this.store;
+    const pageEls = this.containerEl.querySelectorAll<HTMLElement>(".page[data-page-number]");
+    for (const pageEl of Array.from(pageEls)) {
+      const num = Number(pageEl.getAttribute("data-page-number"));
+      if (!Number.isFinite(num) || num < 1) continue;
+      const idx = num - 1;
+      const active =
+        pageEl.hasAttribute("data-loaded") ||
+        !!pageEl.querySelector(":scope > .textLayer, :scope > .canvasWrapper, :scope > .lpa-custom-hl-layer");
+      if (!active && store.byPage(idx).length === 0) continue;
+      void this.syncPage(idx, pageEl);
     }
-    if (!item) return;
-    item.addClass("lpa-card-flash");
-    window.setTimeout(() => item.removeClass("lpa-card-flash"), 1000);
-    if (focusNote) this.focusSidebarNote(id);
+    this.scheduleRailLayout();
   }
 
-  private focusSidebarNote(id: string): void {
-    window.setTimeout(() => {
-      const note = this.sidebarCardFor(id)?.querySelector<HTMLTextAreaElement>(".lpa-margin-note");
-      note?.focus({ preventScroll: true });
-      if (note) note.selectionStart = note.selectionEnd = note.value.length;
-    }, 0);
-  }
+  private async syncPage(idx: number, pageEl: HTMLElement): Promise<void> {
+    const geom = await this.ensureGeom(idx);
+    if (!geom || !pageEl.isConnected) return;
 
-  private scrollRollItem(id: string): void {
-    window.setTimeout(() => {
-      const item = this.rollListEl?.querySelector<HTMLElement>(
-        `.lpa-roll-item[data-hl-id="${cssEscape(id)}"]`
-      );
-      item?.scrollIntoView({ block: "nearest", inline: "center" });
-    }, 0);
-  }
-
-  private onRollWheel(evt: WheelEvent): void {
-    if (!this.rollListEl) return;
-    const delta = Math.abs(evt.deltaX) > Math.abs(evt.deltaY) ? evt.deltaX : evt.deltaY;
-    if (Math.abs(delta) < 0.5 || this.rollListEl.scrollWidth <= this.rollListEl.clientWidth) return;
-    evt.preventDefault();
-    evt.stopPropagation();
-    this.rollScrollVelocity = clamp(-1800, this.rollScrollVelocity + delta * 0.85, 1800);
-    if (this.rollScrollRaf === null) this.animateRollScroll();
-  }
-
-  private animateRollScroll(): void {
-    this.rollScrollRaf = window.requestAnimationFrame(() => {
-      this.rollScrollRaf = null;
-      if (!this.rollListEl) return;
-      this.rollListEl.scrollLeft += this.rollScrollVelocity * 0.18;
-      this.rollScrollVelocity *= 0.74;
-      if (Math.abs(this.rollScrollVelocity) >= 0.35) this.animateRollScroll();
-      else this.rollScrollVelocity = 0;
-    });
-  }
-
-  private stopRollScroll(): void {
-    if (this.rollScrollRaf !== null) {
-      window.cancelAnimationFrame(this.rollScrollRaf);
-      this.rollScrollRaf = null;
+    const textLayer = pageEl.querySelector<HTMLElement>(":scope > .textLayer");
+    let layer = pageEl.querySelector<HTMLElement>(":scope > .lpa-custom-hl-layer");
+    if (!layer) {
+      layer = pageEl.ownerDocument.createElement("div");
+      layer.className = "lpa-highlight-layer lpa-custom-hl-layer";
+      if (textLayer) pageEl.insertBefore(layer, textLayer);
+      else pageEl.appendChild(layer);
     }
-    this.rollScrollVelocity = 0;
-  }
-
-  private sidebarCardFor(id: string): HTMLElement | null {
-    return this.bodyEl?.querySelector<HTMLElement>(
-      `.lpa-margin-card[data-hl-id="${cssEscape(id)}"]`
-    ) ?? null;
-  }
-
-  private onIntersect(entries: IntersectionObserverEntry[]): void {
-    let changed = false;
-    for (const entry of entries) {
-      const idx = Number((entry.target as HTMLElement).dataset.index);
-      const pv = this.pageViews[idx];
-      if (!pv) continue;
-      if (entry.isIntersecting) {
-        if (!this.visible.has(idx)) changed = true;
-        this.visible.add(idx);
-        void this.renderPageContent(pv);
-      } else {
-        if (this.visible.has(idx)) changed = true;
-        this.visible.delete(idx);
-        this.teardownPageContent(pv);
-      }
+    let noteLayer = pageEl.querySelector<HTMLElement>(":scope > .lpa-custom-note-layer");
+    if (!noteLayer) {
+      noteLayer = pageEl.ownerDocument.createElement("div");
+      noteLayer.className = "lpa-note-layer lpa-custom-note-layer";
+      pageEl.appendChild(noteLayer);
     }
-    const key = [...this.visible].sort((a, b) => a - b).join(",");
-    if (changed || key !== this.lastVisibleKey) {
-      this.lastVisibleKey = key;
-      this.renderAnnotationSidebar();
-    } else {
-      this.scheduleMarginLayout();
+    this.paintPage(idx, pageEl, layer, noteLayer, geom);
+  }
+
+  private ensureGeom(idx: number): Promise<PageGeom | null> {
+    const cached = this.geoms.get(idx);
+    if (cached) return Promise.resolve(cached);
+    let promise = this.geomPromises.get(idx);
+    if (!promise) {
+      promise = (async () => {
+        try {
+          if (!this.pdfDoc) return null;
+          const page = await this.pdfDoc.getPage(idx + 1);
+          const vp1 = page.getViewport({ scale: 1 });
+          const geom: PageGeom = { vp1, w: vp1.width, h: vp1.height };
+          this.geoms.set(idx, geom);
+          return geom;
+        } catch (e) {
+          console.error(`${LOG_TAG} view: failed to load geometry for page ${idx + 1}`, e);
+          return null;
+        }
+      })();
+      this.geomPromises.set(idx, promise);
     }
+    return promise;
   }
 
-  private async renderPageContent(pv: PageView): Promise<void> {
-    if (!this.pdfDoc || pv.rendered || pv.rendering) return;
-    pv.rendering = true;
-    const epoch = this.renderEpoch;
-    try {
-      const page = pv.page ?? (await this.pdfDoc.getPage(pv.index + 1));
-      if (epoch !== this.renderEpoch) return;
-      pv.page = page;
+  private paintPage(
+    idx: number,
+    pageEl: HTMLElement,
+    layer: HTMLElement,
+    noteLayer: HTMLElement,
+    geom: PageGeom
+  ): void {
+    layer.empty();
+    noteLayer.empty();
+    const store = this.store;
+    if (!store) return;
 
-      const base = page.getViewport({ scale: 1 });
-      this.pageSizes[pv.index] = { w: base.width, h: base.height };
-      const viewport = page.getViewport({ scale: this.scale });
+    const box = pageContentBox(pageEl);
+    const pxScale = box && geom.w > 0 ? box.width / geom.w : 1;
+    const marks = store.byPage(idx).filter((h) => annotationTypeOf(h) === "highlight");
 
-      pv.el.setCssProps({
-        width: `${Math.floor(viewport.width)}px`,
-        height: `${Math.floor(viewport.height)}px`,
-      });
-
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(viewport.width * dpr);
-      canvas.height = Math.floor(viewport.height * dpr);
-      canvas.setCssProps({
-        width: `${Math.floor(viewport.width)}px`,
-        height: `${Math.floor(viewport.height)}px`,
-      });
-      pv.el.insertBefore(canvas, pv.hlLayer);
-      pv.canvas = canvas;
-
-      const ctx = canvas.getContext("2d");
-      const renderTask = page.render({
-        canvasContext: ctx,
-        viewport,
-        transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
-      });
-      pv.renderTask = renderTask;
-      await renderTask.promise;
-      if (epoch !== this.renderEpoch) { this.teardownPageContent(pv); return; }
-
-      const textLayerEl = pv.el.createDiv({ cls: "lpa-text-layer" });
-      textLayerEl.style.setProperty("--scale-factor", String(this.scale));
-      pv.textLayerEl = textLayerEl;
-      const textContent = await page.getTextContent();
-      if (epoch !== this.renderEpoch) { this.teardownPageContent(pv); return; }
-      const textTask = pdfjsLib.renderTextLayer({
-        textContentSource: textContent,
-        container: textLayerEl,
-        viewport,
-        textDivs: [],
-      });
-      pv.textTask = textTask;
-      await textTask.promise;
-      if (epoch !== this.renderEpoch) { this.teardownPageContent(pv); return; }
-
-      this.renderHighlights(pv);
-      this.renderTags(pv);
-      pv.rendered = true;
-      this.renderAnnotationSidebar();
-    } catch (e: any) {
-      if (e?.name !== "RenderingCancelledException") {
-        console.error(`${LOG_TAG} failed to render page ${pv.index + 1}`, e);
-      }
-      this.teardownPageContent(pv);
-    } finally {
-      pv.rendering = false;
-    }
-  }
-
-  private teardownPageContent(pv: PageView): void {
-    try { pv.renderTask?.cancel(); } catch {}
-    try { pv.textTask?.cancel(); } catch {}
-    pv.renderTask = null;
-    pv.textTask = null;
-    pv.canvas?.remove();
-    pv.canvas = null;
-    pv.textLayerEl?.remove();
-    pv.textLayerEl = null;
-    pv.hlLayer.empty();
-    pv.noteLayer.empty();
-    pv.rendered = false;
-    this.scheduleMarginLayout();
-  }
-
-  // ---- highlights ---------------------------------------------------------
-
-  private renderHighlights(pv: PageView): void {
-    pv.hlLayer.empty();
-    if (!this.store || !pv.page) return;
-    const vp = pv.page.getViewport({ scale: this.scale });
-    const marks = this.store.byPage(pv.index).filter((h) => annotationTypeOf(h) === "highlight");
-
-    // ---- Fill highlights: coalesce same-color rects + occlude overlaps so
-    // overlapping fills never compound into a dark muddy patch. ----
-    const fillRects: HighlightPaintRect[] = [];
+    const fillRects: PaintRect[] = [];
     let order = 0;
     for (const h of marks) {
       if (markStyleOf(h) !== "highlight") continue;
       order++;
-      for (const r of this.rectToViewport(vp, h.rects)) {
-        if (r.right - r.left < 0.5 || r.bottom - r.top < 0.5) continue;
+      for (const r of rectsToBase(geom, h.rects)) {
+        if (r.right - r.left < 0.25 || r.bottom - r.top < 0.25) continue;
         fillRects.push({
-          left: r.left, top: r.top, right: r.right, bottom: r.bottom,
-          color: h.color, order,
+          left: r.left,
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+          color: h.color,
+          order,
           ids: new Set([h.id]),
-          notes: h.note ? new Set([h.note]) : new Set(),
+          notes: h.note ? new Set([h.note]) : new Set<string>(),
         });
       }
     }
-    for (const r of occludeHighlightRects(coalesceHighlightRects(fillRects))) {
-      const div = pv.hlLayer.createDiv({ cls: "lpa-highlight lpa-mark--highlight" });
-      div.setCssProps({
-        left: `${r.left}px`,
-        top: `${r.top}px`,
-        width: `${r.right - r.left}px`,
-        height: `${r.bottom - r.top}px`,
-      });
+    for (const r of occludePaintRects(coalescePaintRects(fillRects))) {
+      const div = layer.createDiv({ cls: "lpa-highlight lpa-mark--highlight" });
+      applyPctBox(div, r, geom);
       div.style.setProperty("--lpa-hl-color", highlightPaintColor(r.color));
-      div.style.setProperty("--lpa-hl-color-active", activeHighlightPaintColor(r.color));
-      div.style.setProperty("--lpa-hl-color-active-gloss", activeHighlightGlossColor(r.color));
-      div.style.setProperty("--lpa-hl-color-active-bridge", activeHighlightBridgeColor(r.color));
       const ids = Array.from(r.ids);
       div.dataset.hlIds = ids.join(" ");
       if (ids.length === 1) div.dataset.hlId = ids[0];
       if (r.notes.size === 1) div.setAttribute("aria-label", Array.from(r.notes)[0]);
-      div.toggleClass("is-active", !!this.activeHighlightId && ids.includes(this.activeHighlightId));
-      div.toggleClass("is-hover", !!this.hoverHighlightId && ids.includes(this.hoverHighlightId));
+      div.toggleClass("is-active", !!this.activeId && ids.includes(this.activeId));
+      div.toggleClass("is-hover", !!this.hoverId && ids.includes(this.hoverId));
     }
 
-    // ---- Decorative styles (underline / dashed / dotted / strike / box /
-    // comment): rendered per-mark, one continuous stroke per visual line. ----
-    const metrics = this.lineMetrics();
+    const metrics = lineMetricsFor(pxScale);
     for (const h of marks) {
       const st = markStyleOf(h);
       if (st === "highlight") continue;
-      const lines = mergeLineRects(this.rectToViewport(vp, h.rects));
-      for (const lr of lines) {
-        this.paintDecorativeLine(pv.hlLayer, h, st, lr, metrics);
+      for (const lr of mergeLineRects(rectsToBase(geom, h.rects))) {
+        this.paintDecorativeLine(layer, h, st, lr, metrics, geom);
       }
     }
-    this.syncActiveRunShape();
-  }
 
-  /** Convert PDF-space rects to viewport rects (left/top/right/bottom px). */
-  private rectToViewport(
-    vp: any,
-    rects: PdfRect[]
-  ): Array<{ left: number; top: number; right: number; bottom: number }> {
-    const out: Array<{ left: number; top: number; right: number; bottom: number }> = [];
-    for (const r of rects) {
-      const a = vp.convertToViewportPoint(r.x1, r.y1);
-      const b = vp.convertToViewportPoint(r.x2, r.y2);
-      out.push({
-        left: Math.min(a[0], b[0]),
-        top: Math.min(a[1], b[1]),
-        right: Math.max(a[0], b[0]),
-        bottom: Math.max(a[1], b[1]),
-      });
+    for (const tag of store.byPage(idx).filter((h) => annotationTypeOf(h) === "tag")) {
+      this.paintTag(noteLayer, tag);
     }
-    return out;
-  }
-
-  /** Stroke weight + dash geometry, scaled with zoom for consistent weight. */
-  private lineMetrics(): {
-    weight: number;
-    dash: number;
-    dashGap: number;
-    dot: number;
-    dotGap: number;
-  } {
-    const s = this.scale;
-    return {
-      weight: clamp(1.4, s * 1.35, 3),
-      dash: Math.max(4, Math.round(s * 5)),
-      dashGap: Math.max(3, Math.round(s * 4)),
-      dot: Math.max(1.4, +(s * 1.6).toFixed(2)),
-      dotGap: Math.max(2.4, +(s * 2.8).toFixed(2)),
-    };
   }
 
   private paintDecorativeLine(
     layer: HTMLElement,
     h: Highlight,
     st: MarkStyle,
-    lr: { left: number; top: number; right: number; bottom: number },
-    m: { weight: number; dash: number; dashGap: number; dot: number; dotGap: number }
+    lr: BaseRect,
+    m: LineMetrics,
+    geom: PageGeom
   ): void {
     const el = layer.createDiv({ cls: `lpa-highlight lpa-mark lpa-mark--${st}` });
-    el.setCssProps({
-      left: `${lr.left}px`,
-      top: `${lr.top}px`,
-      width: `${lr.right - lr.left}px`,
-      height: `${lr.bottom - lr.top}px`,
-    });
-
+    applyPctBox(el, lr, geom);
     const pal = resolvePalette(h.color);
     const ink = pal?.ink ?? markInkColor(h.color);
     el.style.setProperty("--lpa-ink", ink);
     el.style.setProperty("--lpa-w", `${m.weight}px`);
-    el.style.setProperty("--lpa-hl-color-active", activeHighlightPaintColor(h.color));
-    el.style.setProperty("--lpa-hl-color-active-gloss", activeHighlightGlossColor(h.color));
-    el.style.setProperty("--lpa-hl-color-active-bridge", activeHighlightBridgeColor(h.color));
-
     if (st === "dashed") {
       el.style.setProperty(
         "--lpa-deco",
@@ -1245,212 +493,179 @@ export class PdfAnnotatorView extends FileView {
         `repeating-linear-gradient(90deg, ${ink} 0 ${m.dot}px, transparent ${m.dot}px ${m.dot + m.dotGap}px)`
       );
     } else if (st === "comment") {
-      // Quiet: a faint dotted underline in low-alpha ink, no fill.
       const faint = withAlpha(ink, 0.5);
       el.style.setProperty(
         "--lpa-deco",
         `repeating-linear-gradient(90deg, ${faint} 0 ${m.dot}px, transparent ${m.dot}px ${m.dot + m.dotGap}px)`
       );
     } else {
-      // underline / strike: solid stroke
       el.style.setProperty("--lpa-deco", ink);
     }
-
     el.dataset.hlIds = h.id;
     el.dataset.hlId = h.id;
     if (h.note) el.setAttribute("aria-label", h.note);
-    el.toggleClass("is-active", h.id === this.activeHighlightId);
-    el.toggleClass("is-hover", h.id === this.hoverHighlightId);
+    el.toggleClass("is-active", h.id === this.activeId);
+    el.toggleClass("is-hover", h.id === this.hoverId);
   }
 
-  private renderTags(pv: PageView): void {
-    pv.noteLayer.empty();
-    if (!this.store || !pv.page) return;
-    const tags = this.store.byPage(pv.index).filter((h) => annotationTypeOf(h) === "tag");
-    for (const tag of tags) {
-      if (!Number.isFinite(tag.tagX) || !Number.isFinite(tag.tagY)) continue;
-      const x = clamp(0, tag.tagX ?? 0, 100);
-      const y = clamp(0, tag.tagY ?? 0, 100);
-      const el = pv.noteLayer.createDiv({ cls: "lpa-page-tag" });
-      el.dataset.hlId = tag.id;
-      el.dataset.annotationId = tag.id;
-      el.setCssProps({ left: `${x}%`, top: `${y}%` });
-      el.style.setProperty("--lpa-accent", resolvePalette(annotationColor(tag))?.ink ?? markInkColor(annotationColor(tag)));
-      el.toggleClass("is-active", tag.id === this.activeHighlightId);
-      el.toggleClass("is-hover", tag.id === this.hoverHighlightId);
-      el.toggleClass("is-pinned", !!tag.isPinned);
-      el.createSpan({ cls: "lpa-tag-dot", attr: { "aria-hidden": "true" } });
-      el.createSpan({ cls: "lpa-tag-preview", text: tagPreview(tag) });
-      el.addEventListener("mouseenter", () => this.setHoveredHighlight(tag.id));
-      el.addEventListener("mouseleave", () => this.clearHoveredHighlightSoon(tag.id));
-      el.addEventListener("click", (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.activateHighlight(tag.id, { focusNote: true });
-      });
-      el.addEventListener("dblclick", (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        this.activateHighlight(tag.id, { focusNote: true });
-      });
-      el.addEventListener("contextmenu", (evt) => this.openAnnotationContextMenu(evt, tag.id));
-      el.addEventListener("mousedown", (evt) => this.beginTagDrag(evt, tag.id, pv));
-    }
-    this.scheduleMarginLayout();
+  private paintTag(noteLayer: HTMLElement, tag: Highlight): void {
+    if (!Number.isFinite(tag.tagX) || !Number.isFinite(tag.tagY)) return;
+    const x = clamp(0, tag.tagX ?? 0, 100);
+    const y = clamp(0, tag.tagY ?? 0, 100);
+    const el = noteLayer.createDiv({ cls: "lpa-page-tag" });
+    el.dataset.hlId = tag.id;
+    el.dataset.annotationId = tag.id;
+    el.setCssProps({ left: `${x}%`, top: `${y}%` });
+    el.style.setProperty(
+      "--lpa-accent",
+      resolvePalette(annotationColor(tag))?.ink ?? markInkColor(annotationColor(tag))
+    );
+    el.toggleClass("is-pinned", !!tag.isPinned);
+    el.toggleClass("is-active", tag.id === this.activeId);
+    el.toggleClass("is-hover", tag.id === this.hoverId);
+    el.createSpan({ cls: "lpa-tag-dot", attr: { "aria-hidden": "true" } });
+    el.createSpan({ cls: "lpa-tag-preview", text: tagPreview(tag) });
+    this.bindMarkHover(el, tag.id);
+    el.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.openEditPopover(tag.id, evt.clientX, evt.clientY, { focusNote: true });
+    });
   }
 
-  private onDocumentSelectionChange(): void {
-    const sel = this.contentEl.ownerDocument.getSelection();
-    if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) {
-      this.hideSelectionActions(false);
+  private bindMarkHover(el: HTMLElement, id: string | undefined): void {
+    if (!id) return;
+    el.addEventListener("mouseenter", () => this.setHoveredAnnotation(id));
+    el.addEventListener("mouseleave", () => this.clearHoveredAnnotationSoon(id));
+  }
+
+  private repaintPage(idx: number): void {
+    const pageEl = this.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${idx + 1}"]`);
+    if (pageEl) void this.syncPage(idx, pageEl);
+  }
+
+  private collectPageBoxes(): PageBox[] {
+    const out: PageBox[] = [];
+    for (const pageEl of Array.from(this.containerEl.querySelectorAll<HTMLElement>(".page[data-page-number]"))) {
+      const num = Number(pageEl.getAttribute("data-page-number"));
+      if (!Number.isFinite(num) || num < 1) continue;
+      const box = pageContentBox(pageEl);
+      if (!box) continue;
+      out.push({ idx: num - 1, pageEl, box });
     }
+    return out;
+  }
+
+  private pageBoxAtPoint(x: number, y: number): PageBox | null {
+    return (
+      this.collectPageBoxes().find(
+        (b) => x >= b.box.left && x <= b.box.right && y >= b.box.top && y <= b.box.bottom
+      ) ?? null
+    );
+  }
+
+  private annotationAtPoint(x: number, y: number): Highlight | null {
+    const store = this.store;
+    if (!store) return null;
+    const hit = this.pageBoxAtPoint(x, y);
+    if (!hit) return null;
+    const geom = this.geoms.get(hit.idx);
+    if (!geom) return null;
+    const [px, py] = clientToPdfPoint(x, y, hit.box, geom);
+    const matches = store.byPage(hit.idx).filter(
+      (h) =>
+        annotationTypeOf(h) === "highlight" &&
+        h.rects.some(
+          (r) =>
+            px >= Math.min(r.x1, r.x2) &&
+            px <= Math.max(r.x1, r.x2) &&
+            py >= Math.min(r.y1, r.y2) &&
+            py <= Math.max(r.y1, r.y2)
+        )
+    );
+    return matches[matches.length - 1] ?? null;
   }
 
   private onMouseUp(evt: MouseEvent): void {
-    if (!this.store) return;
-    if (this.tagPlacementMode) return;
-    const doc = this.pagesEl.ownerDocument;
-    const sel = doc.getSelection();
+    if (!this.store || this.tagMode) return;
+    const target = evt.target as HTMLElement | null;
+    if (target?.closest(".lpa-selection-popover, .lpa-mark-popover, .lpa-native-controls, .lpa-native-roll, .lpa-native-margins")) return;
+    const sel = this.containerEl.ownerDocument.getSelection();
     if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
-      const pending = this.snapshotSelection(sel);
-      if (pending) this.showSelectionHandle(pending);
-      else this.hideSelectionActions(false);
-    } else {
-      this.hideSelectionActions(false);
-      this.handleHighlightClick(evt);
+      void this.captureSelection(sel, evt.clientX, evt.clientY);
     }
   }
 
-  private onPagesClick(evt: MouseEvent): void {
-    if (!this.tagPlacementMode || !this.store) return;
-    const target = evt.target as HTMLElement | null;
-    if (target?.closest(".lpa-page-tag, .lpa-mark-popover")) return;
-    const created = this.createTagAtPoint(evt.clientX, evt.clientY);
-    if (!created) return;
-    evt.preventDefault();
-    evt.stopPropagation();
-    this.setTagPlacementMode(false);
-    this.activateHighlight(created.id, { scrollSidebar: true, focusNote: true });
-  }
-
-  private createTagAtPoint(clientX: number, clientY: number): Highlight | null {
-    if (!this.store) return null;
-    const pv = this.pageViewAtPoint(clientX, clientY);
-    if (!pv) return null;
-    const pageRect = pv.el.getBoundingClientRect();
-    const xPct = clamp(0, ((clientX - pageRect.left) / Math.max(1, pageRect.width)) * 100, 100);
-    const yPct = clamp(0, ((clientY - pageRect.top) / Math.max(1, pageRect.height)) * 100, 100);
-    const tag: Highlight = {
-      id: newId(),
-      type: "tag",
-      page: pv.index,
-      color: this.currentColor,
-      tagColor: this.currentColor,
-      tagX: xPct,
-      tagY: yPct,
-      text: "",
-      note: "",
-      rects: [],
-      created: new Date().toISOString(),
-      source: "manual",
-      marginSide: "auto",
-      isPinned: false,
-    };
-    this.store.add(tag);
-    if (pv.rendered) this.renderTags(pv);
-    this.renderAnnotationSidebar();
-    return tag;
-  }
-
-  private snapshotSelection(sel: Selection): PendingSelection | null {
+  private async captureSelection(sel: Selection, anchorX: number, anchorY: number): Promise<void> {
     const text = sel.toString().trim();
-    if (!text || !this.store) return null;
+    if (!text) return;
+    const boxes = this.collectPageBoxes();
+    if (!boxes.length) return;
 
-    const byPage = new Map<number, PdfRect[]>();
-    const clientRects: DOMRect[] = [];
+    const rawByPage = new Map<number, { box: DOMRect; rects: DOMRect[] }>();
     for (let ri = 0; ri < sel.rangeCount; ri++) {
       const range = sel.getRangeAt(ri);
       for (const cr of Array.from(range.getClientRects())) {
         if (cr.width < 1 || cr.height < 1) continue;
-        const pv = this.pageViewForClientRect(cr);
-        if (!pv || !pv.page) continue;
-        const vp = pv.page.getViewport({ scale: this.scale });
-        const pageRect = pv.el.getBoundingClientRect();
-        const p1 = vp.convertToPdfPoint(cr.left - pageRect.left, cr.top - pageRect.top);
-        const p2 = vp.convertToPdfPoint(cr.right - pageRect.left, cr.bottom - pageRect.top);
-        const arr = byPage.get(pv.index) ?? [];
-        arr.push({ x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1] });
-        byPage.set(pv.index, arr);
-        clientRects.push(cr);
+        const cx = cr.left + cr.width / 2;
+        const cy = cr.top + cr.height / 2;
+        const hit = boxes.find(
+          (b) => cx >= b.box.left && cx <= b.box.right && cy >= b.box.top && cy <= b.box.bottom
+        );
+        if (!hit) continue;
+        const entry = rawByPage.get(hit.idx) ?? { box: hit.box, rects: [] };
+        entry.rects.push(cr);
+        rawByPage.set(hit.idx, entry);
       }
     }
-    if (byPage.size === 0 || clientRects.length === 0) return null;
+    if (rawByPage.size === 0) return;
 
-    const anchor = this.computeSelectionActionAnchor(sel, clientRects);
-    if (!anchor) return null;
-    return { text, byPage, anchor };
-  }
-
-  private computeSelectionActionAnchor(sel: Selection, rects: DOMRect[]): SelectionActionAnchor | null {
-    const backward = isSelectionBackward(sel);
-    const focusRect = this.focusCaretRect(sel);
-    const fallback = selectionFocusFallbackRect(rects, backward);
-    const rect = focusRect ?? fallback;
-    if (!rect) return null;
-    const side: "left" | "right" = backward ? "left" : "right";
-    const focusX = side === "left" ? rect.left : rect.right;
-    const height = clamp(12, rect.height || fallback?.height || 16, 34);
-    const gap = 4;
-    const markerWidth = 5;
-    const x = side === "right" ? focusX + gap : focusX - gap - markerWidth;
-    const y = rect.top + (rect.height || height) / 2 - height / 2;
-    return { x, y, height, side };
-  }
-
-  private focusCaretRect(sel: Selection): DOMRect | null {
-    if (!sel.focusNode) return null;
-    try {
-      const range = this.pagesEl.ownerDocument.createRange();
-      range.setStart(sel.focusNode, sel.focusOffset);
-      range.collapse(true);
-      const rects = Array.from(range.getClientRects()).filter((r) => r.height > 0);
-      const rect = rects[0] ?? null;
-      range.detach();
-      return rect;
-    } catch {
-      return null;
+    const byPage = new Map<number, PdfRect[]>();
+    for (const [idx, entry] of rawByPage) {
+      const geom = await this.ensureGeom(idx);
+      if (!geom) continue;
+      const rects: PdfRect[] = [];
+      for (const cr of entry.rects) {
+        const p1 = clientToPdfPoint(cr.left, cr.top, entry.box, geom);
+        const p2 = clientToPdfPoint(cr.right, cr.bottom, entry.box, geom);
+        rects.push({ x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1] });
+      }
+      if (rects.length) byPage.set(idx, rects);
     }
+    if (byPage.size === 0) return;
+
+    this.pendingSelection = { text, byPage };
+    this.showSelectionPopover(anchorX, anchorY);
   }
 
-  private showSelectionHandle(pending: PendingSelection): void {
-    this.pendingSelection = pending;
-    this.closeSelectionActionPopup();
-    const accent = resolvePalette(this.currentColor)?.ink ?? markInkColor(this.currentColor);
-    this.rubberHandle?.show(pending.anchor, accent);
-  }
-
-  private openSelectionActionPopup(): void {
-    const pending = this.pendingSelection;
-    if (!pending) return;
+  private showSelectionPopover(x: number, y: number): void {
     this.selectionPopoverEl?.remove();
-    const doc = this.pagesEl.ownerDocument;
-    const pop = doc.body.createDiv({ cls: `lpa-selection-popover is-${pending.anchor.side}` });
+    const doc = this.containerEl.ownerDocument;
+    const pop = doc.body.createDiv({ cls: "lpa-selection-popover is-right" });
     this.selectionPopoverEl = pop;
-    pop.style.setProperty("--lpa-accent", resolvePalette(this.currentColor)?.ink ?? markInkColor(this.currentColor));
+    pop.style.setProperty(
+      "--lpa-accent",
+      resolvePalette(this.currentColor)?.ink ?? markInkColor(this.currentColor)
+    );
     pop.onmousedown = (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
     };
 
     const swatches = pop.createDiv({ cls: "lpa-selection-swatches", attr: { "aria-label": "Highlight color" } });
-    for (const p of PALETTE) {
+    const palette = this.getActivePalette();
+    for (const p of palette) {
       const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name, title: p.name } });
-      sw.setCssProps({ background: p.fill });
+      
+      sw.style.backgroundColor = p.fill;
+      sw.style.setProperty("--lpa-fill", p.fill);
+      sw.style.setProperty("--lpa-ink", p.ink);
+
       sw.dataset.color = p.fill;
       sw.toggleClass("is-active", p.fill === this.currentColor);
       sw.onclick = (evt) => {
         evt.preventDefault();
-        this.setActiveColor(p.fill);
+        this.currentColor = p.fill;
         pop.style.setProperty("--lpa-accent", p.ink);
         for (const candidate of Array.from(swatches.querySelectorAll<HTMLElement>(".lpa-swatch"))) {
           candidate.toggleClass("is-active", candidate.dataset.color === p.fill);
@@ -1461,17 +676,20 @@ export class PdfAnnotatorView extends FileView {
     const highlightBtn = pop.createEl("button", { cls: "lpa-selection-action", text: "Highlight" });
     highlightBtn.onclick = (evt) => {
       evt.preventDefault();
-      this.commitPendingSelection("highlight");
+      this.commitSelection("highlight", x, y);
     };
-    const annotateBtn = pop.createEl("button", { cls: "lpa-selection-action lpa-selection-action-primary", text: "Annotate" });
+    const annotateBtn = pop.createEl("button", {
+      cls: "lpa-selection-action lpa-selection-action-primary",
+      text: "Annotate",
+    });
     annotateBtn.onclick = (evt) => {
       evt.preventDefault();
-      this.commitPendingSelection("annotate");
+      this.commitSelection("annotate", x, y);
     };
     const copyBtn = pop.createEl("button", { cls: "lpa-selection-action lpa-selection-action-quiet", text: "Copy" });
     copyBtn.onclick = async (evt) => {
       evt.preventDefault();
-      await navigator.clipboard.writeText(this.pendingSelection?.text ?? pending.text);
+      await navigator.clipboard.writeText(this.pendingSelection?.text ?? "");
       new Notice("Copied selected text");
     };
 
@@ -1479,41 +697,33 @@ export class PdfAnnotatorView extends FileView {
     const pr = pop.getBoundingClientRect();
     const vw = doc.documentElement.clientWidth;
     const vh = doc.documentElement.clientHeight;
-    const sideGap = 10;
-    let x = pending.anchor.side === "right"
-      ? pending.anchor.x + sideGap
-      : pending.anchor.x - pr.width - sideGap;
-    let y = pending.anchor.y + pending.anchor.height / 2 - pr.height / 2;
-    x = clamp(8, x, Math.max(8, vw - pr.width - 8));
-    y = clamp(8, y, Math.max(8, vh - pr.height - 8));
-    pop.setCssProps({
-      left: `${x}px`,
-      top: `${y}px`,
-      visibility: "visible",
-    });
-    this.rubberHandle?.setClusterElement(pop);
+    const px = clamp(8, x + 8, Math.max(8, vw - pr.width - 8));
+    const py = clamp(8, y + 14, Math.max(8, vh - pr.height - 8));
+    pop.setCssProps({ left: `${px}px`, top: `${py}px`, visibility: "visible" });
   }
 
-  private closeSelectionActionPopup(): void {
-    this.selectionPopoverEl?.remove();
-    this.selectionPopoverEl = null;
-    this.rubberHandle?.closeToRest();
-  }
-
-  private hideSelectionActions(clearNativeSelection: boolean): void {
+  private hideSelectionPopover(clearNativeSelection: boolean): void {
     this.selectionPopoverEl?.remove();
     this.selectionPopoverEl = null;
     this.pendingSelection = null;
-    this.rubberHandle?.hide();
     if (clearNativeSelection) {
-      this.pagesEl.ownerDocument.getSelection()?.removeAllRanges();
+      this.containerEl.ownerDocument.getSelection()?.removeAllRanges();
     }
   }
 
-  private commitPendingSelection(mode: "highlight" | "annotate"): void {
+  private onSelectionChange(): void {
+    if (!this.selectionPopoverEl) return;
+    const sel = this.containerEl.ownerDocument.getSelection();
+    if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) {
+      this.hideSelectionPopover(false);
+    }
+  }
+
+  private commitSelection(mode: "highlight" | "annotate", anchorX: number, anchorY: number): void {
     const pending = this.pendingSelection;
-    if (!pending || !this.store) return;
-    const createdIds: string[] = [];
+    const store = this.store;
+    if (!pending || !store) return;
+    const created: Highlight[] = [];
     for (const [pageIndex, rects] of pending.byPage) {
       const h: Highlight = {
         id: newId(),
@@ -1529,707 +739,806 @@ export class PdfAnnotatorView extends FileView {
         isPinned: false,
       };
       if (mode === "annotate") h.note = "";
-      this.store.add(h);
-      createdIds.push(h.id);
-      const pv = this.pageViews[pageIndex];
-      if (pv) this.renderHighlights(pv);
+      store.add(h);
+      created.push(h);
     }
-    this.hideSelectionActions(true);
-    this.renderAnnotationSidebar();
-    if (!createdIds.length) return;
-    if (mode === "annotate") {
-      this.activateHighlight(createdIds[0], { scrollSidebar: true, focusNote: true });
-    } else {
-      this.activateHighlight(createdIds[0], { scrollSidebar: false });
+    this.hideSelectionPopover(true);
+    for (const h of created) this.repaintPage(h.page);
+    this.notifyStoreChanged();
+    if (mode === "annotate" && created[0]) {
+      this.openEditPopover(created[0].id, anchorX, anchorY, { focusNote: true });
+    } else if (created[0]) {
+      this.setActiveAnnotation(created[0].id);
     }
   }
 
-  private pageViewAtPoint(clientX: number, clientY: number): PageView | null {
-    const doc = this.pagesEl.ownerDocument;
-    const el = doc.elementFromPoint(clientX, clientY) as HTMLElement | null;
-    const pageEl = el?.closest(".lpa-page") as HTMLElement | null;
-    if (!pageEl) return null;
-    return this.pageViews[Number(pageEl.dataset.index)] ?? null;
-  }
-
-  private highlightAtPoint(
-    clientX: number,
-    clientY: number
-  ): { highlight: Highlight; pageView: PageView } | null {
-    if (!this.store) return null;
-    const pv = this.pageViewAtPoint(clientX, clientY);
-    if (!pv || !pv.page) return null;
-    const visualMarks = Array.from(pv.hlLayer.querySelectorAll<HTMLElement>(".lpa-highlight")).reverse();
-    for (const mark of visualMarks) {
-      const r = mark.getBoundingClientRect();
-      if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) continue;
-      const ids = highlightIdsForElement(mark);
-      for (let i = ids.length - 1; i >= 0; i--) {
-        const highlight = this.store.get(ids[i]);
-        if (highlight && annotationTypeOf(highlight) === "highlight") return { highlight, pageView: pv };
-      }
-    }
-    const vp = pv.page.getViewport({ scale: this.scale });
-    const pageRect = pv.el.getBoundingClientRect();
-    const pt = vp.convertToPdfPoint(clientX - pageRect.left, clientY - pageRect.top);
-    const hits = this.store.byPage(pv.index).filter((h) =>
-      h.rects.some(
-        (r) =>
-          pt[0] >= Math.min(r.x1, r.x2) && pt[0] <= Math.max(r.x1, r.x2) &&
-          pt[1] >= Math.min(r.y1, r.y2) && pt[1] <= Math.max(r.y1, r.y2)
-      )
-    );
-    const highlight = hits[hits.length - 1];
-    return highlight ? { highlight, pageView: pv } : null;
-  }
-
-  private onPageMouseMove(evt: MouseEvent): void {
-    if (this.tagPlacementMode) return;
-    if (evt.buttons !== 0) return;
-    const sel = this.pagesEl.ownerDocument.getSelection();
-    if (sel && !sel.isCollapsed) return;
-    this.setHoveredHighlight(this.highlightAtPoint(evt.clientX, evt.clientY)?.highlight.id ?? null);
-  }
-
-  private pageViewForClientRect(rect: DOMRect): PageView | null {
-    const direct = this.pageViewAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    if (direct) return direct;
-
-    let best: { pv: PageView; area: number } | null = null;
-    for (const pv of this.pageViews) {
-      if (!pv.page) continue;
-      const pr = pv.el.getBoundingClientRect();
-      const w = Math.min(rect.right, pr.right) - Math.max(rect.left, pr.left);
-      const h = Math.min(rect.bottom, pr.bottom) - Math.max(rect.top, pr.top);
-      const area = w > 0 && h > 0 ? w * h : 0;
-      if (area > 0 && (!best || area > best.area)) best = { pv, area };
-    }
-    return best?.pv ?? null;
-  }
-
-  private handleHighlightClick(evt: MouseEvent): void {
+  private onClick(evt: MouseEvent): void {
     if (!this.store) return;
-    const hit = this.highlightAtPoint(evt.clientX, evt.clientY);
+    const target = evt.target as HTMLElement | null;
+    if (
+      target?.closest(
+        ".pdf-toolbar, .lpa-page-tag, .lpa-native-controls, .lpa-native-roll, .lpa-mark-popover, .lpa-selection-popover, .lpa-native-margins"
+      )
+    ) {
+      return;
+    }
+    if (this.tagMode) {
+      const created = this.createTagAt(evt.clientX, evt.clientY);
+      if (created) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.setTagMode(false);
+        this.openEditPopover(created.id, evt.clientX, evt.clientY, { focusNote: true });
+      }
+      return;
+    }
+    const sel = this.containerEl.ownerDocument.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    if (target?.closest("a, .annotationLayer")) return;
+    const hit = this.annotationAtPoint(evt.clientX, evt.clientY);
     if (hit) {
       evt.preventDefault();
-      this.activateHighlight(hit.highlight.id, { scrollSidebar: true });
-      this.openMarkPopover(hit.highlight, evt, hit.pageView);
+      this.openEditPopover(hit.id, evt.clientX, evt.clientY, {});
     } else {
-      this.closeMarkPopover();
+      this.setActiveAnnotation(null);
     }
   }
 
-  /**
-   * The post-hoc editor: a calm, non-modal popover with the SAME two axes as the
-   * pen — change style and/or color on an existing mark, live, in one click each.
-   * Plus copy + delete. No native menu, no dialog.
-   */
-  private openMarkPopover(h: Highlight, evt: MouseEvent, pv: PageView): void {
-    this.closeMarkPopover();
-    const doc = this.pagesEl.ownerDocument;
+  private createTagAt(clientX: number, clientY: number): Highlight | null {
+    const store = this.store;
+    if (!store) return null;
+    const hit = this.pageBoxAtPoint(clientX, clientY);
+    if (!hit) return null;
+    const xPct = clamp(0, ((clientX - hit.box.left) / Math.max(1, hit.box.width)) * 100, 100);
+    const yPct = clamp(0, ((clientY - hit.box.top) / Math.max(1, hit.box.height)) * 100, 100);
+    const tag: Highlight = {
+      id: newId(),
+      type: "tag",
+      page: hit.idx,
+      color: this.currentColor,
+      tagColor: this.currentColor,
+      tagX: xPct,
+      tagY: yPct,
+      text: "",
+      note: "",
+      rects: [],
+      created: new Date().toISOString(),
+      source: "manual",
+      marginSide: "auto",
+      isPinned: false,
+    };
+    store.add(tag);
+    this.repaintPage(hit.idx);
+    this.notifyStoreChanged();
+    return tag;
+  }
+
+  private onKeyDown(evt: KeyboardEvent): void {
+    if (evt.key !== "Escape") return;
+    if (this.tagMode) {
+      this.setTagMode(false);
+      return;
+    }
+    if (this.selectionPopoverEl) this.hideSelectionPopover(false);
+  }
+
+  private openEditPopover(
+    id: string,
+    x: number,
+    y: number,
+    options: { focusNote?: boolean }
+  ): void {
+    const store = this.store;
+    const initial = store?.get(id);
+    if (!store || !initial) return;
+    this.closeEditPopover();
+    this.setActiveAnnotation(id);
+    const doc = this.containerEl.ownerDocument;
     const pop = doc.body.createDiv({ cls: "lpa-mark-popover" });
+    const type = annotationTypeOf(initial);
 
-    const rerender = () => {
-      const cur = this.store?.get(h.id);
-      if (!cur) return;
-      const target = this.pageViews[cur.page] ?? pv;
-      if (target?.rendered) {
-        this.renderHighlights(target);
-        this.renderTags(target);
-      }
-      this.renderAnnotationSidebar();
+    const repaint = () => {
+      const cur = store.get(id);
+      this.repaintPage((cur ?? initial).page);
+      this.notifyStoreChanged();
     };
 
-    // Row 1 — style
-    const styleRow = pop.createDiv({ cls: "lpa-styles", attr: { role: "radiogroup", "aria-label": "Mark style" } });
-    const syncStyleChecks = () => {
-      const cur = markStyleOf(this.store?.get(h.id));
-      for (const b of Array.from(styleRow.children) as HTMLElement[]) {
-        b.toggleClass("is-active", b.dataset.style === cur);
-      }
-    };
-    for (const st of MARK_STYLES) {
-      const btn = styleRow.createEl("button", {
-        cls: "lpa-style-btn",
-        attr: { "aria-label": MARK_STYLE_LABELS[st], title: MARK_STYLE_LABELS[st] },
-      });
-      btn.dataset.style = st;
-      const pal = resolvePalette(this.store?.get(h.id)?.color ?? h.color);
-      buildStylePreview(btn, st);
-      btn.style.setProperty("--lpa-ink", pal?.ink ?? h.color);
-      btn.style.setProperty("--lpa-fill", pal?.fill ?? h.color);
-      btn.onclick = () => {
-        this.store?.update(h.id, { style: st });
-        rerender();
-        syncStyleChecks();
+    let styleRow: HTMLElement | null = null;
+    if (type === "highlight") {
+      styleRow = pop.createDiv({ cls: "lpa-styles", attr: { role: "radiogroup", "aria-label": "Mark style" } });
+      const syncStyleChecks = () => {
+        const cur = markStyleOf(store.get(id));
+        for (const b of Array.from(styleRow!.children) as HTMLElement[]) {
+          b.toggleClass("is-active", b.dataset.style === cur);
+        }
       };
+      for (const st of MARK_STYLES) {
+        const btn = styleRow.createEl("button", {
+          cls: "lpa-style-btn",
+          attr: { "aria-label": MARK_STYLE_LABELS[st], title: MARK_STYLE_LABELS[st] },
+        });
+        btn.dataset.style = st;
+        const pal = resolvePalette(store.get(id)?.color ?? initial.color);
+        btn.createSpan({ cls: `lpa-style-sample lpa-style-sample--${st}`, text: "A", attr: { "aria-hidden": "true" } });
+        btn.style.setProperty("--lpa-ink", pal?.ink ?? initial.color);
+        btn.style.setProperty("--lpa-fill", pal?.fill ?? initial.color);
+        btn.onclick = () => {
+          store.update(id, { style: st });
+          repaint();
+          syncStyleChecks();
+        };
+      }
+      syncStyleChecks();
     }
 
-    // Row 2 — color
     const colorRow = pop.createDiv({ cls: "lpa-swatches" });
     const syncColorChecks = () => {
-      const cur = this.store?.get(h.id)?.color;
+      const cur = store.get(id);
+      const active = cur ? annotationColor(cur) : null;
       for (const sw of Array.from(colorRow.children) as HTMLElement[]) {
-        sw.toggleClass("is-active", sw.dataset.color === cur);
+        sw.toggleClass("is-active", sw.dataset.color === active);
       }
     };
-    for (const p of PALETTE) {
+    const palette = this.getActivePalette();
+    for (const p of palette) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
-      sw.setCssProps({ background: p.fill });
+      
+      sw.style.backgroundColor = p.fill;
+      sw.style.setProperty("--lpa-fill", p.fill);
+      sw.style.setProperty("--lpa-ink", p.ink);
+
       sw.dataset.color = p.fill;
       sw.onclick = () => {
-        this.store?.update(h.id, { color: p.fill });
-        rerender();
-        // restyle the style previews to the new ink
-        for (const b of Array.from(styleRow.children) as HTMLElement[]) {
-          b.style.setProperty("--lpa-ink", p.ink);
-          b.style.setProperty("--lpa-fill", p.fill);
+        const patch: Partial<Highlight> =
+          type === "tag" ? { color: p.fill, tagColor: p.fill } : { color: p.fill };
+        store.update(id, patch);
+        repaint();
+        if (styleRow) {
+          for (const b of Array.from(styleRow.children) as HTMLElement[]) {
+            b.style.setProperty("--lpa-ink", p.ink);
+            b.style.setProperty("--lpa-fill", p.fill);
+          }
         }
         syncColorChecks();
       };
     }
+    syncColorChecks();
 
-    // Row 3 — actions
+    if (type === "highlight" && initial.text) {
+      pop.createDiv({ cls: "lpa-native-popover-source", text: initial.text });
+    }
+
+    const note = pop.createEl("textarea", {
+      cls: "lpa-native-note",
+      attr: {
+        placeholder: type === "tag" ? "Page note" : "Note",
+        rows: "3",
+        "aria-label": type === "tag" ? "Page note" : "Annotation note",
+      },
+    });
+    note.value = initial.note ?? "";
+    note.oninput = () => {
+      store.update(id, { note: note.value });
+      repaint();
+    };
+
+    const sideNote = pop.createEl("textarea", {
+      cls: "lpa-native-note lpa-native-side-note",
+      attr: { placeholder: "Side note", rows: "2", "aria-label": "Side note" },
+    });
+    sideNote.value = initial.noteContentCJK ?? "";
+    sideNote.oninput = () => {
+      store.update(id, { noteContentCJK: sideNote.value.trim() ? sideNote.value : undefined });
+      this.notifyStoreChanged();
+    };
+
     const actions = pop.createDiv({ cls: "lpa-popover-actions" });
     const copyBtn = actions.createEl("button", { text: "Copy" });
     copyBtn.onclick = async () => {
-      await navigator.clipboard.writeText(this.store?.get(h.id)?.text ?? h.text);
-      new Notice("Copied mark text");
-    };
-    const noteBtn = actions.createEl("button", { text: "Annotate" });
-    noteBtn.onclick = () => {
-      this.ensureAnnotationCard(h.id);
-      this.closeMarkPopover();
-      this.activateHighlight(h.id, { scrollSidebar: true, focusNote: true });
+      const cur = store.get(id);
+      await navigator.clipboard.writeText((cur?.note || cur?.text || tagPreview(cur ?? initial)).trim());
+      new Notice("Copied annotation text");
     };
     const delBtn = actions.createEl("button", { cls: "lpa-danger", text: "Delete" });
     delBtn.onclick = () => {
-      const page = this.store?.get(h.id)?.page ?? h.page;
-      this.store?.remove(h.id);
-      if (this.activeHighlightId === h.id) this.activeHighlightId = null;
-      if (this.hoverHighlightId === h.id) this.hoverHighlightId = null;
-      this.closeMarkPopover();
-      const target = this.pageViews[page] ?? pv;
-      if (target?.rendered) {
-        this.renderHighlights(target);
-        this.renderTags(target);
-      }
-      this.renderAnnotationSidebar();
+      const page = store.get(id)?.page ?? initial.page;
+      store.remove(id);
+      this.closeEditPopover();
+      this.repaintPage(page);
+      this.notifyStoreChanged();
     };
 
-    syncStyleChecks();
-    syncColorChecks();
-
-    // Position near the click, clamped into the viewport.
     pop.setCssProps({ visibility: "hidden" });
     const vw = doc.documentElement.clientWidth;
     const vh = doc.documentElement.clientHeight;
     const pr = pop.getBoundingClientRect();
-    let x = evt.clientX + 6;
-    let y = evt.clientY + 10;
-    if (x + pr.width > vw - 8) x = Math.max(8, vw - pr.width - 8);
-    if (y + pr.height > vh - 8) y = Math.max(8, evt.clientY - pr.height - 10);
-    pop.setCssProps({
-      left: `${x}px`,
-      top: `${y}px`,
-      visibility: "visible",
-    });
+    let px = x + 6;
+    let py = y + 10;
+    if (px + pr.width > vw - 8) px = Math.max(8, vw - pr.width - 8);
+    if (py + pr.height > vh - 8) py = Math.max(8, y - pr.height - 10);
+    pop.setCssProps({ left: `${px}px`, top: `${py}px`, visibility: "visible" });
 
     const onDocPointer = (e: MouseEvent) => {
-      if (!pop.contains(e.target as Node)) this.closeMarkPopover();
+      if (!pop.contains(e.target as Node)) this.closeEditPopover();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") this.closeMarkPopover();
+      if (e.key === "Escape") this.closeEditPopover();
     };
-    // defer so the opening click doesn't immediately dismiss it
     window.setTimeout(() => doc.addEventListener("mousedown", onDocPointer, true), 0);
     doc.addEventListener("keydown", onKey, true);
-    this.markPopoverCleanup = () => {
+    this.editPopoverCleanup = () => {
       doc.removeEventListener("mousedown", onDocPointer, true);
       doc.removeEventListener("keydown", onKey, true);
       pop.remove();
     };
+
+    if (options.focusNote) {
+      window.setTimeout(() => {
+        note.focus();
+        note.selectionStart = note.selectionEnd = note.value.length;
+      }, 0);
+    }
   }
 
-  private closeMarkPopover(): void {
-    this.markPopoverCleanup?.();
-    this.markPopoverCleanup = null;
+  private closeEditPopover(): void {
+    this.editPopoverCleanup?.();
+    this.editPopoverCleanup = null;
   }
 
-  /** Scroll to a highlight and flash it (used by markdown back-links, Phase 2). */
-  async revealHighlight(
-    id: string,
-    options: { scrollSidebar?: boolean; focusNote?: boolean } = { scrollSidebar: true }
-  ): Promise<void> {
-    const h = this.store?.get(id);
-    if (!h) return;
-    this.activateHighlight(id, {
-      scrollSidebar: options.scrollSidebar ?? true,
-      focusNote: !!options.focusNote,
+  private setTagMode(on: boolean): void {
+    this.tagMode = on;
+    this.containerEl.toggleClass("lpa-native-tag-mode", on);
+    if (this.tagBtn) {
+      this.tagBtn.toggleClass("is-active", on);
+      this.tagBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+
+  private initMarginRail(root: HTMLElement): void {
+    this.marginsEl = root.createDiv({ cls: "lpa-native-margins" });
+    const svg = root.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("lpa-connection-layer", "lpa-native-connections");
+    this.marginsEl.appendChild(svg);
+    this.connectionSvg = svg;
+    this.leftRailEl = this.marginsEl.createDiv({
+      cls: "lpa-margin lpa-margin-left lpa-native-rail",
+      attr: { "aria-label": "Left annotations" },
     });
-    const pv = this.pageViews[h.page];
-    if (!pv) return;
-    pv.el.scrollIntoView({ block: "center" });
-    await this.renderPageContent(pv);
-    const div = annotationTypeOf(h) === "tag"
-      ? pv.noteLayer.querySelector<HTMLElement>(`.lpa-page-tag[data-hl-id="${cssEscape(id)}"]`)
-      : Array.from(pv.hlLayer.querySelectorAll<HTMLElement>(".lpa-highlight"))
-        .find((el) => (el.dataset.hlIds ?? "").split(/\s+/).includes(id));
-    if (div) {
-      div.addClass("lpa-flash");
-      window.setTimeout(() => div.removeClass("lpa-flash"), 1200);
-    }
-  }
-
-  private toggleAnnotationPin(id: string): void {
-    const h = this.store?.get(id);
-    if (!h) return;
-    this.store?.update(id, { isPinned: !h.isPinned });
-    this.renderAnnotationSidebar();
-    const pv = this.pageViews[h.page];
-    if (pv?.rendered) this.renderTags(pv);
-  }
-
-  private ensureAnnotationCard(id: string): void {
-    const h = this.store?.get(id);
-    if (!h || annotationTypeOf(h) !== "highlight") return;
-    if (typeof h.note !== "string") this.store?.update(id, { note: "" });
-    this.renderAnnotationSidebar();
-  }
-
-  private openAnnotationContextMenu(evt: MouseEvent, id: string): void {
-    const h = this.store?.get(id);
-    if (!h) return;
-    evt.preventDefault();
-    evt.stopPropagation();
-    const menu = new Menu();
-    menu.addItem((item) =>
-      item
-        .setTitle("Edit note")
-        .setIcon("pencil")
-        .onClick(() => {
-          this.ensureAnnotationCard(id);
-          this.activateHighlight(id, { scrollSidebar: true, focusNote: true });
-        })
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle(h.isPinned ? "Unpin card" : "Pin card")
-        .setIcon("pin")
-        .onClick(() => this.toggleAnnotationPin(id))
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle("Move card to left margin")
-        .setIcon("panel-left")
-        .onClick(() => this.setAnnotationMarginSide(id, "left"))
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle("Move card to right margin")
-        .setIcon("panel-right")
-        .onClick(() => this.setAnnotationMarginSide(id, "right"))
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle("Auto-place card")
-        .setIcon("move-horizontal")
-        .onClick(() => this.setAnnotationMarginSide(id, "auto"))
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle("Copy text")
-        .setIcon("copy")
-        .onClick(async () => {
-          await navigator.clipboard.writeText((h.note || h.text || tagPreview(h)).trim());
-          new Notice("Copied annotation text");
-        })
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle("Change color")
-        .setIcon("palette")
-        .onClick(() => this.openAnnotationColorPopover(id, evt.clientX, evt.clientY))
-    );
-    menu.addSeparator();
-    menu.addItem((item) =>
-      item
-        .setTitle("Delete")
-        .setIcon("trash")
-        .onClick(() => this.deleteAnnotation(id))
-    );
-    menu.showAtMouseEvent(evt);
-  }
-
-  private setAnnotationMarginSide(id: string, side: "left" | "right" | "auto"): void {
-    const h = this.store?.get(id);
-    if (!h) return;
-    this.store?.update(id, { marginSide: side });
-    this.renderAnnotationSidebar();
-    const pv = this.pageViews[h.page];
-    if (pv?.rendered) this.renderTags(pv);
-  }
-
-  private openAnnotationColorPopover(id: string, clientX: number, clientY: number): void {
-    const h = this.store?.get(id);
-    if (!h) return;
-    this.closeMarkPopover();
-    const doc = this.pagesEl.ownerDocument;
-    const pop = doc.body.createDiv({ cls: "lpa-mark-popover lpa-color-popover" });
-    const colorRow = pop.createDiv({ cls: "lpa-swatches" });
-    for (const p of PALETTE) {
-      const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
-      sw.setCssProps({ background: p.fill });
-      sw.dataset.color = p.fill;
-      sw.toggleClass("is-active", annotationColor(h) === p.fill);
-      sw.onclick = () => {
-        const patch: Partial<Highlight> = annotationTypeOf(h) === "tag"
-          ? { color: p.fill, tagColor: p.fill }
-          : { color: p.fill };
-        this.store?.update(id, patch);
-        const cur = this.store?.get(id);
-        if (cur) {
-          const pv = this.pageViews[cur.page];
-          if (pv?.rendered) {
-            this.renderHighlights(pv);
-            this.renderTags(pv);
-          }
-        }
-        this.renderAnnotationSidebar();
-        this.closeMarkPopover();
-      };
-    }
-    pop.setCssProps({ visibility: "hidden" });
-    const vw = doc.documentElement.clientWidth;
-    const vh = doc.documentElement.clientHeight;
-    const pr = pop.getBoundingClientRect();
-    let x = clientX + 6;
-    let y = clientY + 10;
-    if (x + pr.width > vw - 8) x = Math.max(8, vw - pr.width - 8);
-    if (y + pr.height > vh - 8) y = Math.max(8, clientY - pr.height - 10);
-    pop.setCssProps({
-      left: `${x}px`,
-      top: `${y}px`,
-      visibility: "visible",
+    this.rightRailEl = this.marginsEl.createDiv({
+      cls: "lpa-margin lpa-margin-right lpa-native-rail",
+      attr: { "aria-label": "Right annotations" },
     });
-    const onDocPointer = (e: MouseEvent) => {
-      if (!pop.contains(e.target as Node)) this.closeMarkPopover();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") this.closeMarkPopover();
-    };
-    window.setTimeout(() => doc.addEventListener("mousedown", onDocPointer, true), 0);
-    doc.addEventListener("keydown", onKey, true);
-    this.markPopoverCleanup = () => {
-      doc.removeEventListener("mousedown", onDocPointer, true);
-      doc.removeEventListener("keydown", onKey, true);
-      pop.remove();
-    };
+
+    this.scroller = root;
+    this.railScrollTarget = root;
+    root.addEventListener("scroll", this.railScrollHandler, { passive: true });
+    this.railResizeObserver = new ResizeObserver(() => this.scheduleRailLayout());
+    this.railResizeObserver.observe(root);
+    this.cleanups.push(() => {
+      this.railScrollTarget?.removeEventListener("scroll", this.railScrollHandler);
+      this.railResizeObserver?.disconnect();
+    });
   }
 
-  private deleteAnnotation(id: string): void {
-    const h = this.store?.get(id);
-    if (!h) return;
-    this.store?.remove(id);
-    if (this.activeHighlightId === id) this.activeHighlightId = null;
-    if (this.hoverHighlightId === id) this.hoverHighlightId = null;
-    const pv = this.pageViews[h.page];
-    if (pv?.rendered) {
-      this.renderHighlights(pv);
-      this.renderTags(pv);
+  private onScroll(): void {
+    if (!this.marginsEl) return;
+    this.marginsEl.addClass("is-scrolling");
+    this.scheduleRailLayout();
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    if (this.scrollSettleTimer !== null) win.clearTimeout(this.scrollSettleTimer);
+    this.scrollSettleTimer = win.setTimeout(() => {
+      this.scrollSettleTimer = null;
+      this.marginsEl?.removeClass("is-scrolling");
+      this.scheduleRailLayout();
+    }, 120);
+  }
+
+  private scheduleRailLayout(): void {
+    if (this.railRaf !== null || !this.marginsEl) return;
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    this.railRaf = win.requestAnimationFrame(() => {
+      this.railRaf = null;
+      this.layoutRail();
+    });
+  }
+
+  private layoutRail(): void {
+    const root = this.containerEl;
+    const margins = this.marginsEl;
+    const store = this.store;
+    if (!root || !margins || !this.leftRailEl || !this.rightRailEl || !store) return;
+
+    const rootRect = root.getBoundingClientRect();
+    margins.setCssProps({
+      left: "0px",
+      top: "0px",
+      width: `${Math.round(rootRect.width)}px`,
+      height: `${Math.round(rootRect.height)}px`,
+    });
+
+    const pages = new Map<number, { box: DOMRect; geom: PageGeom }>();
+    let pageLeft = Infinity;
+    let pageRight = -Infinity;
+    for (const b of this.collectPageBoxes()) {
+      if (b.box.bottom <= rootRect.top || b.box.top >= rootRect.bottom) continue;
+      const geom = this.geoms.get(b.idx);
+      if (!geom) continue;
+      pages.set(b.idx, { box: b.box, geom });
+      pageLeft = Math.min(pageLeft, b.box.left);
+      pageRight = Math.max(pageRight, b.box.right);
     }
-    this.renderAnnotationSidebar();
-  }
+    if (pages.size === 0) {
+      this.clearRail();
+      return;
+    }
 
-  private beginTagDrag(evt: MouseEvent, id: string, pv: PageView): void {
-    if (!evt.altKey && !evt.metaKey) return;
-    const tag = this.store?.get(id);
-    if (!tag || annotationTypeOf(tag) !== "tag") return;
-    evt.preventDefault();
-    evt.stopPropagation();
-    const doc = this.pagesEl.ownerDocument;
-    const move = (e: MouseEvent) => {
-      const pageRect = pv.el.getBoundingClientRect();
-      const xPct = clamp(0, ((e.clientX - pageRect.left) / Math.max(1, pageRect.width)) * 100, 100);
-      const yPct = clamp(0, ((e.clientY - pageRect.top) / Math.max(1, pageRect.height)) * 100, 100);
-      const el = pv.noteLayer.querySelector<HTMLElement>(`.lpa-page-tag[data-hl-id="${cssEscape(id)}"]`);
-      if (el) {
-        el.setCssProps({ left: `${xPct}%`, top: `${yPct}%` });
+    const naturalLeftWidth = Math.max(0, pageLeft - rootRect.left);
+    const naturalRightWidth = Math.max(0, rootRect.right - 14 - pageRight);
+    this.railWidths = { left: naturalLeftWidth, right: naturalRightWidth };
+    this.applyRailWidth(this.leftRailEl, naturalLeftWidth);
+    this.applyRailWidth(this.rightRailEl, naturalRightWidth);
+
+    const desired: RailEntry[] = [];
+    for (const [idx, page] of pages) {
+      for (const h of store.byPage(idx)) {
+        if (!this.wantsMarginCard(h)) continue;
+        const anchor = this.computeAnchor(h, page.box, page.geom, rootRect);
+        if (!anchor) continue;
+        desired.push({ h, anchor });
       }
-      this.scheduleMarginLayout();
-    };
-    const up = (e: MouseEvent) => {
-      doc.removeEventListener("mousemove", move, true);
-      doc.removeEventListener("mouseup", up, true);
-      const pageRect = pv.el.getBoundingClientRect();
-      const xPct = clamp(0, ((e.clientX - pageRect.left) / Math.max(1, pageRect.width)) * 100, 100);
-      const yPct = clamp(0, ((e.clientY - pageRect.top) / Math.max(1, pageRect.height)) * 100, 100);
-      this.store?.update(id, { tagX: xPct, tagY: yPct });
-      this.renderAnnotationSidebar();
-    };
-    doc.addEventListener("mousemove", move, true);
-    doc.addEventListener("mouseup", up, true);
+    }
+
+    this.reconcileRailCards(desired);
+    this.stackRailCards(desired);
+    this.drawRailConnections(desired, rootRect);
   }
 
-  private computeAnnotationAnchor(h: Highlight): AnnotationAnchor | null {
-    const pv = this.pageViews[h.page];
-    if (!pv || !pv.page) return null;
-    const pageRect = pv.el.getBoundingClientRect();
-    const pagesRect = this.pagesEl.getBoundingClientRect();
-    const bodyRect = this.bodyEl.getBoundingClientRect();
-    if (pageRect.bottom < pagesRect.top || pageRect.top > pagesRect.bottom) return null;
+  private clearRail(): void {
+    this.railWidths = { left: 0, right: 0 };
+    this.reconcileRailCards([]);
+    const svg = this.connectionSvg;
+    if (svg) while (svg.firstChild) svg.firstChild.remove();
+  }
 
-    const explicit = h.marginSide === "left" || h.marginSide === "right" ? h.marginSide : null;
+  private applyRailWidth(rail: HTMLElement, width: number): void {
+    const rounded = Math.max(0, Math.round(width));
+    rail.setCssProps({ width: `${rounded}px` });
+  }
+
+  private wantsMarginCard(h: Highlight): boolean {
+    if (annotationTypeOf(h) === "tag") {
+      return !!h.isPinned || h.id === this.hoverId || h.id === this.activeId;
+    }
+    return (
+      typeof h.note === "string" ||
+      !!h.noteContentCJK ||
+      !!h.isPinned ||
+      h.id === this.hoverId ||
+      h.id === this.activeId
+    );
+  }
+
+  private computeAnchor(
+    h: Highlight,
+    box: DOMRect,
+    geom: PageGeom,
+    areaRect: DOMRect
+  ): MarginAnchor | null {
+    const pageLeftX = box.left - areaRect.left;
+    const pageRightX = box.right - areaRect.left;
+    const pageTopY = box.top - areaRect.top;
+    const pageBottomY = box.bottom - areaRect.top;
+
     if (annotationTypeOf(h) === "tag") {
       if (typeof h.tagX !== "number" || typeof h.tagY !== "number") return null;
-      const sourceXViewport = pageRect.left + (clamp(0, h.tagX, 100) / 100) * pageRect.width;
-      const sourceYViewport = pageRect.top + (clamp(0, h.tagY, 100) / 100) * pageRect.height;
-      const side = this.chooseMarginSide(explicit, h.tagX < 50 ? "left" : "right");
+      const sourceX = pageLeftX + (clamp(0, h.tagX, 100) / 100) * box.width;
+      const sourceY = box.top - areaRect.top + (clamp(0, h.tagY, 100) / 100) * box.height;
       return {
-        side,
-        sourceX: sourceXViewport - bodyRect.left,
-        sourceY: sourceYViewport - bodyRect.top,
-        idealY: sourceYViewport - bodyRect.top,
-        pageTopY: pageRect.top - bodyRect.top,
-        pageBottomY: pageRect.bottom - bodyRect.top,
-        sourceWidth: 12,
-        sourceHeight: 18,
-        pageLeftX: pageRect.left - bodyRect.left,
-        pageRightX: pageRect.right - bodyRect.left,
+        side: h.tagX < 50 ? "left" : "right",
+        sourceX,
+        sourceY,
+        idealY: sourceY,
+        pageTopY,
+        pageBottomY,
+        pageLeftX,
+        pageRightX,
       };
     }
 
     if (h.rects.length === 0) return null;
-    const vp = pv.page.getViewport({ scale: this.scale });
-    const rects = this.rectToViewport(vp, h.rects).filter((r) => r.right - r.left >= 0.5 && r.bottom - r.top >= 0.5);
-    if (rects.length === 0) return null;
-    const lines = mergeLineRects(rects);
-    const firstLine = lines[0] ?? rects[0];
-    const left = Math.min(...rects.map((r) => r.left));
-    const right = Math.max(...rects.map((r) => r.right));
-    const top = Math.min(...rects.map((r) => r.top));
-    const bottom = Math.max(...rects.map((r) => r.bottom));
-    const centerX = (left + right) / 2;
-    const lineCenterY = (firstLine.top + firstLine.bottom) / 2;
-    const side = this.chooseMarginSide(explicit, centerX < pageRect.width / 2 ? "left" : "right");
+    const base = rectsToBase(geom, h.rects);
+    if (base.length === 0) return null;
+    const lines = mergeLineRects(base);
+    const first = lines[0] ?? base[0];
+    const left = Math.min(...base.map((r) => r.left));
+    const right = Math.max(...base.map((r) => r.right));
+    const sx = box.width / geom.w;
+    const sy = box.height / geom.h;
+    const side = (left + right) / 2 < geom.w / 2 ? "left" : "right";
     const sourceEdge = side === "left" ? left : right;
     return {
       side,
-      sourceX: pageRect.left + sourceEdge - bodyRect.left,
-      sourceY: pageRect.top + lineCenterY - bodyRect.top,
-      idealY: pageRect.top + firstLine.top - bodyRect.top,
-      pageTopY: pageRect.top - bodyRect.top,
-      pageBottomY: pageRect.bottom - bodyRect.top,
-      sourceWidth: right - left,
-      sourceHeight: bottom - top,
-      pageLeftX: pageRect.left - bodyRect.left,
-      pageRightX: pageRect.right - bodyRect.left,
+      sourceX: pageLeftX + sourceEdge * sx,
+      sourceY: box.top - areaRect.top + ((first.top + first.bottom) / 2) * sy,
+      idealY: box.top - areaRect.top + first.top * sy,
+      pageTopY,
+      pageBottomY,
+      pageLeftX,
+      pageRightX,
     };
   }
 
-  private chooseMarginSide(explicit: "left" | "right" | null, preferred: "left" | "right"): "left" | "right" {
-    if (explicit) return explicit;
-    const left = this.marginGeometry.leftWidth;
-    const right = this.marginGeometry.rightWidth;
-    const readable = 82;
-    const materialDifference = 28;
-    if (preferred === "left" && left < readable && right >= readable && right > left + materialDifference) {
-      return "right";
+  private reconcileRailCards(desired: RailEntry[]): void {
+    const margins = this.marginsEl;
+    if (!margins) return;
+    const doc = margins.ownerDocument;
+    const focused = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+    const wanted = new Map(desired.map((d) => [d.h.id, d]));
+
+    for (const card of Array.from(margins.querySelectorAll<HTMLElement>(".lpa-native-rail > .lpa-margin-card"))) {
+      const id = card.dataset.hlId ?? "";
+      const entry = wanted.get(id);
+      const holdsFocus = !!focused && card.contains(focused);
+      if (!entry) {
+        if (!holdsFocus) card.remove();
+        continue;
+      }
+      const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
+      if (rail && card.parentElement !== rail && !holdsFocus) rail.appendChild(card);
+      this.syncCardContent(card, entry.h);
+      wanted.delete(id);
     }
-    if (preferred === "right" && right < readable && left >= readable && left > right + materialDifference) {
-      return "left";
+    for (const entry of wanted.values()) {
+      const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
+      if (rail) this.createRailCard(rail, entry.h, entry.anchor.side);
     }
-    return preferred;
   }
 
-  private updateElasticMargins(): void {
-    if (!this.bodyEl || !this.leftMarginEl || !this.rightMarginEl) return;
-    const bodyRect = this.bodyEl.getBoundingClientRect();
-    if (bodyRect.width <= 0 || bodyRect.height <= 0) return;
+  private createRailCard(rail: HTMLElement, h: Highlight, side: "left" | "right"): HTMLElement {
+    const type = annotationTypeOf(h);
+    const card = rail.createDiv({ cls: `lpa-margin-card lpa-margin-card--${type}` });
+    card.dataset.hlId = h.id;
+    card.dataset.annotationId = h.id;
 
-    const visibleSides = Number(!this.collapsedMargins.left) + Number(!this.collapsedMargins.right);
-    const pageTargetWidth = (this.defaultSize?.w ?? 612) * this.scale + 36;
-    const availableForMargins = Math.max(0, bodyRect.width - pageTargetWidth);
-    const elasticWidth = visibleSides > 0
-      ? clamp(MIN_INTERACTION_MARGIN, availableForMargins / visibleSides, MAX_READING_MARGIN)
-      : 0;
-    const leftColumn = this.collapsedMargins.left ? COLLAPSED_MARGIN_RAIL : elasticWidth;
-    const rightColumn = this.collapsedMargins.right ? COLLAPSED_MARGIN_RAIL : elasticWidth;
-
-    this.bodyEl.style.setProperty("--lpa-left-column", `${Math.round(leftColumn)}px`);
-    this.bodyEl.style.setProperty("--lpa-right-column", `${Math.round(rightColumn)}px`);
-
-    const pageRect = this.marginReferencePageRect();
-    const fallbackLeft = leftColumn + Math.max(0, (bodyRect.width - leftColumn - rightColumn - pageTargetWidth) / 2) + 18;
-    const pageLeftX = pageRect ? pageRect.left - bodyRect.left : fallbackLeft;
-    const pageRightX = pageRect ? pageRect.right - bodyRect.left : fallbackLeft + Math.max(1, pageTargetWidth - 36);
-    const leftWidth = this.collapsedMargins.left ? 0 : leftColumn;
-    const rightWidth = this.collapsedMargins.right ? 0 : rightColumn;
-    this.marginGeometry = { leftWidth, rightWidth, pageLeftX, pageRightX };
-    this.applyElasticMarginWidth(this.leftMarginEl, leftColumn);
-    this.applyElasticMarginWidth(this.rightMarginEl, rightColumn);
-  }
-
-  private marginReferencePageRect(): DOMRect | null {
-    if (!this.bodyEl) return null;
-    const bodyRect = this.bodyEl.getBoundingClientRect();
-    let best: { rect: DOMRect; area: number } | null = null;
-    const candidates = this.visible.size ? [...this.visible] : this.pageViews.map((_, i) => i).slice(0, 3);
-    for (const idx of candidates) {
-      const pv = this.pageViews[idx];
-      if (!pv?.el.isConnected) continue;
-      const rect = pv.el.getBoundingClientRect();
-      const visibleW = Math.max(0, Math.min(rect.right, bodyRect.right) - Math.max(rect.left, bodyRect.left));
-      const visibleH = Math.max(0, Math.min(rect.bottom, bodyRect.bottom) - Math.max(rect.top, bodyRect.top));
-      const area = visibleW * visibleH;
-      if (area > 0 && (!best || area > best.area)) best = { rect, area };
-    }
-    return best?.rect ?? this.pageViews[0]?.el.getBoundingClientRect() ?? null;
-  }
-
-  private applyElasticMarginWidth(margin: HTMLElement, width: number): void {
-    const rounded = Math.max(0, Math.round(width));
-    margin.style.setProperty("--lpa-margin-width", `${rounded}px`);
-    margin.toggleClass("is-collapsed", rounded < 42);
-    margin.toggleClass("is-tight", rounded >= 42 && rounded < 92);
-    margin.toggleClass("is-compact", rounded >= 92 && rounded < 132);
-    margin.toggleClass("is-roomy", rounded >= 180);
-    margin.toggleClass("is-spacious", rounded >= 260);
-  }
-
-  private onPdfScroll(): void {
-    this.hideSelectionActions(false);
-    this.bodyEl?.addClass("is-scrolling");
-    this.scheduleMarginLayout();
-    if (this.scrollSettleTimer !== null) window.clearTimeout(this.scrollSettleTimer);
-    this.scrollSettleTimer = window.setTimeout(() => {
-      this.scrollSettleTimer = null;
-      this.bodyEl?.removeClass("is-scrolling");
-      this.scheduleMarginLayout();
-    }, 120);
-  }
-
-  private scheduleMarginLayout(): void {
-    if (this.marginLayoutRaf !== null) return;
-    this.marginLayoutRaf = window.requestAnimationFrame(() => {
-      this.marginLayoutRaf = null;
-      this.updateElasticMargins();
-      this.layoutMarginCards();
-      this.redrawConnectionLines();
+    card.addEventListener("mouseenter", () => this.setHoveredAnnotation(h.id));
+    card.addEventListener("mouseleave", () => this.clearHoveredAnnotationSoon(h.id));
+    card.addEventListener("click", (evt) => {
+      const target = evt.target as HTMLElement | null;
+      if (target?.closest("textarea,button")) return;
+      this.setActiveAnnotation(h.id);
     });
-  }
 
-  private layoutMarginCards(): void {
-    this.layoutMargin(this.leftMarginEl);
-    this.layoutMargin(this.rightMarginEl);
-  }
+    const head = card.createDiv({ cls: "lpa-margin-card-head" });
+    head.createSpan({ cls: "lpa-margin-dot", attr: { "aria-hidden": "true" } });
+    head.createSpan({ cls: "lpa-margin-page", text: `p.${h.page + 1}` });
 
-  private layoutMargin(margin: HTMLElement): void {
-    if (!margin) return;
-    const cardElements = Array.from(margin.querySelectorAll<HTMLElement>(".lpa-margin-card"));
-    const gap = 5;
-    const cards = cardElements
-      .map((card) => {
-        const id = card.dataset.hlId ?? "";
-        const h = id ? this.store?.get(id) : undefined;
-        const anchor = h ? this.computeAnnotationAnchor(h) : null;
-        return h && anchor ? { card, h, anchor } : null;
-      })
-      .filter((item): item is { card: HTMLElement; h: Highlight; anchor: AnnotationAnchor } => !!item);
-    const groups = new Map<number, typeof cards>();
-    for (const item of cards) {
-      const group = groups.get(item.h.page) ?? [];
-      group.push(item);
-      groups.set(item.h.page, group);
+    const note = card.createEl("textarea", {
+      cls: "lpa-margin-note",
+      attr: { placeholder: type === "tag" ? "Page note" : "Note", rows: "2" },
+    });
+    note.value = h.note ?? "";
+    note.onfocus = () => this.setActiveAnnotation(h.id);
+    note.oninput = () => {
+      this.store?.update(h.id, { note: note.value });
+      syncMarginCardPresentation(card);
+      this.repaintPage(h.page);
+      this.updateCount();
+      if (this.listPanelEl) this.renderListItems();
+      this.scheduleRailLayout();
+    };
+
+    if (type === "highlight" && h.text) {
+      card.createDiv({ cls: "lpa-margin-source", text: marginCardSourceText(h.text) });
     }
-    for (const group of groups.values()) {
-      const anchor = group[0].anchor;
-      applyMarginCardDensity(
-        group.map(({ card }) => card),
-        Math.max(1, anchor.pageBottomY - anchor.pageTopY),
+
+    this.syncCardContent(card, h);
+    return card;
+  }
+
+  private syncCardContent(card: HTMLElement, h: Highlight): void {
+    const pal = resolvePalette(annotationColor(h));
+    card.style.setProperty("--lpa-accent", pal?.ink ?? markInkColor(annotationColor(h)));
+    card.toggleClass("is-pinned", !!h.isPinned);
+    card.toggleClass("is-active", h.id === this.activeId);
+    card.toggleClass("is-hover", h.id === this.hoverId);
+    card.toggleClass(
+      "is-expanded",
+      !!h.isPinned || h.id === this.activeId || h.id === this.hoverId
+    );
+    syncMarginCardPresentation(card);
+  }
+
+  private stackRailCards(desired: RailEntry[]): void {
+    const byId = new Map(desired.map((d) => [d.h.id, d]));
+    for (const rail of [this.leftRailEl, this.rightRailEl]) {
+      if (!rail) continue;
+      const cards = Array.from(rail.querySelectorAll<HTMLElement>(".lpa-margin-card"));
+      const gap = 5;
+      const groups = new Map<number, Array<{ card: HTMLElement; entry: RailEntry }>>();
+      for (const card of cards) {
+        const entry = byId.get(card.dataset.hlId ?? "");
+        if (!entry) continue;
+        const group = groups.get(entry.h.page) ?? [];
+        group.push({ card, entry });
+        groups.set(entry.h.page, group);
+      }
+      for (const group of groups.values()) {
+        const anchor = group[0].entry.anchor;
+        applyMarginCardDensity(
+          group.map(({ card }) => card),
+          Math.max(1, anchor.pageBottomY - anchor.pageTopY),
+          gap
+        );
+      }
+      const items = Array.from(groups.values()).flat().map(({ card, entry }) => ({
+        card,
+        entry,
+        height: measureMarginCardHeight(card),
+      }));
+      const tops = layoutPageBoundedCardTops(
+        items.map(({ entry, height }) => ({
+          page: entry.h.page,
+          idealY: entry.anchor.idealY,
+          height,
+          pageTopY: entry.anchor.pageTopY,
+          pageBottomY: entry.anchor.pageBottomY,
+        })),
         gap
       );
+      items.forEach((item, index) => {
+        item.card.setCssProps({ top: `${Math.round(tops[index])}px` });
+      });
     }
-    const measured = cards.map((item) => ({ ...item, height: measureMarginCardHeight(item.card) }));
-    const tops = layoutPageBoundedCardTops(
-      measured.map(({ h, anchor, height }) => ({
-        page: h.page,
-        idealY: anchor.idealY,
-        height,
-        pageTopY: anchor.pageTopY,
-        pageBottomY: anchor.pageBottomY,
-      })),
-      gap
-    );
-    measured.forEach((item, index) => {
-      item.card.setCssProps({ top: `${Math.round(tops[index])}px` });
-    });
   }
 
-  private redrawConnectionLines(): void {
-    if (!this.connectionSvg || !this.bodyEl) return;
-    while (this.connectionSvg.firstChild) this.connectionSvg.firstChild.remove();
-    const bodyRect = this.bodyEl.getBoundingClientRect();
-    this.connectionSvg.setAttribute("viewBox", `0 0 ${Math.max(1, bodyRect.width)} ${Math.max(1, bodyRect.height)}`);
-    this.connectionSvg.setAttribute("width", `${Math.max(1, bodyRect.width)}`);
-    this.connectionSvg.setAttribute("height", `${Math.max(1, bodyRect.height)}`);
-    for (const card of Array.from(this.bodyEl.querySelectorAll<HTMLElement>(".lpa-margin-card"))) {
-      const id = card.dataset.hlId ?? "";
-      const h = id ? this.store?.get(id) : undefined;
-      const anchor = h ? this.computeAnnotationAnchor(h) : null;
-      if (!h || !anchor) continue;
-      const side = anchor.side;
-      if (this.collapsedMargins[side]) continue;
-      const marginWidth = side === "left" ? this.marginGeometry.leftWidth : this.marginGeometry.rightWidth;
-      if (marginWidth < 42) continue;
+  private drawRailConnections(desired: RailEntry[], areaRect: DOMRect): void {
+    const svg = this.connectionSvg;
+    const margins = this.marginsEl;
+    if (!svg || !margins) return;
+    while (svg.firstChild) svg.firstChild.remove();
+    const w = Math.max(1, Math.round(areaRect.width));
+    const hgt = Math.max(1, Math.round(areaRect.height));
+    svg.setAttribute("viewBox", `0 0 ${w} ${hgt}`);
+    svg.setAttribute("width", `${w}`);
+    svg.setAttribute("height", `${hgt}`);
+    const marginsRect = margins.getBoundingClientRect();
+    const svgNS = "http://www.w3.org/2000/svg";
+
+    for (const { h, anchor } of desired) {
+      const card = margins.querySelector<HTMLElement>(
+        `.lpa-margin-card[data-hl-id="${cssEscape(h.id)}"]`
+      );
+      if (!card) continue;
       const cardRect = card.getBoundingClientRect();
-      const cardX = side === "left" ? cardRect.right - bodyRect.left : cardRect.left - bodyRect.left;
-      const cardY = cardRect.top + cardRect.height / 2 - bodyRect.top;
-      const borderX = side === "left" ? anchor.pageLeftX : anchor.pageRightX;
+      const cardX =
+        anchor.side === "left" ? cardRect.right - marginsRect.left : cardRect.left - marginsRect.left;
+      const cardY = cardRect.top + cardRect.height / 2 - marginsRect.top;
+      const borderX = anchor.side === "left" ? anchor.pageLeftX : anchor.pageRightX;
       const accent = resolvePalette(annotationColor(h))?.ink ?? markInkColor(annotationColor(h));
       const isTag = annotationTypeOf(h) === "tag";
+      const engaged = h.id === this.hoverId || h.id === this.activeId;
       const d = isTag
         ? `M ${anchor.sourceX},${anchor.sourceY} C ${borderX},${anchor.sourceY} ${borderX},${cardY} ${cardX},${cardY}`
         : `M ${cardX},${cardY} C ${borderX},${cardY} ${borderX},${anchor.sourceY} ${anchor.sourceX},${anchor.sourceY}`;
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const path = margins.ownerDocument.createElementNS(svgNS, "path");
       path.setAttribute("d", d);
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", accent);
-      path.classList.add("lpa-connection-line", isTag ? "lpa-connection-line--tag" : "lpa-connection-line--highlight");
-      path.dataset.hlId = id;
-      if (id === this.hoverHighlightId || id === this.activeHighlightId) path.classList.add("is-hover");
+      path.classList.add(
+        "lpa-connection-line",
+        isTag ? "lpa-connection-line--tag" : "lpa-connection-line--highlight"
+      );
+      if (engaged) path.classList.add("is-hover");
       if (h.isPinned) path.classList.add("is-pinned");
-      this.connectionSvg.appendChild(path);
+      svg.appendChild(path);
 
-      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      const dot = margins.ownerDocument.createElementNS(svgNS, "circle");
       dot.setAttribute("cx", `${cardX}`);
       dot.setAttribute("cy", `${cardY}`);
-      dot.setAttribute("r", id === this.hoverHighlightId || id === this.activeHighlightId ? "2.5" : "2");
+      dot.setAttribute("r", engaged ? "2.5" : "2");
       dot.setAttribute("fill", accent);
       dot.classList.add("lpa-connection-dot");
-      if (id === this.hoverHighlightId || id === this.activeHighlightId) dot.classList.add("is-hover");
+      if (engaged) dot.classList.add("is-hover");
       if (h.isPinned) dot.classList.add("is-pinned");
-      this.connectionSvg.appendChild(dot);
-
-      if (isTag && !h.isPinned) {
-        const len = path.getTotalLength();
-        path.setAttribute("stroke-dasharray", `${len}`);
-        path.setAttribute("stroke-dashoffset", `${len}`);
-        window.requestAnimationFrame(() => {
-          path.setAttribute("stroke-dashoffset", "0");
-        });
-      }
+      svg.appendChild(dot);
     }
   }
 
-  // ---- legacy import ------------------------------------------------------
-
-  async importLegacyAnnotations(): Promise<void> {
-    if (!this.pdfDoc || !this.store || !this.file) {
-      new Notice("Open a PDF in the annotator first.");
+  private onPointerMove(evt: MouseEvent): void {
+    if (this.tagMode || !this.store) return;
+    const target = evt.target as HTMLElement | null;
+    if (
+      target?.closest(
+        ".lpa-native-margins, .lpa-native-roll, .lpa-native-controls, .lpa-mark-popover, .lpa-selection-popover, .lpa-page-tag"
+      )
+    ) {
       return;
     }
-    const pdfName = this.file.name.normalize("NFC").toLowerCase();
+    this.lastPointer = {
+      x: evt.clientX,
+      y: evt.clientY,
+      pageEl: target?.closest<HTMLElement>(".page[data-page-number]") ?? null,
+    };
+    if (this.pointerRaf !== null) return;
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    this.pointerRaf = win.requestAnimationFrame(() => {
+      this.pointerRaf = null;
+      if (!this.lastPointer) return;
+      const hit = this.hoveredHighlightAt(this.lastPointer);
+      if (hit) this.setHoveredAnnotation(hit.id);
+      else if (this.hoverId) this.clearHoveredAnnotationSoon(this.hoverId);
+    });
+  }
+
+  private hoveredHighlightAt(p: { x: number; y: number; pageEl: HTMLElement | null }): Highlight | null {
+    const store = this.store;
+    if (!store || !p.pageEl || !p.pageEl.isConnected) return null;
+    const num = Number(p.pageEl.getAttribute("data-page-number"));
+    if (!Number.isFinite(num) || num < 1) return null;
+    const idx = num - 1;
+    const geom = this.geoms.get(idx);
+    const box = pageContentBox(p.pageEl);
+    if (!geom || !box) return null;
+    const [px, py] = clientToPdfPoint(p.x, p.y, box, geom);
+    const matches = store.byPage(idx).filter(
+      (h) =>
+        annotationTypeOf(h) === "highlight" &&
+        h.rects.some(
+          (r) =>
+            px >= Math.min(r.x1, r.x2) &&
+            px <= Math.max(r.x1, r.x2) &&
+            py >= Math.min(r.y1, r.y2) &&
+            py <= Math.max(r.y1, r.y2)
+        )
+    );
+    return matches[matches.length - 1] ?? null;
+  }
+
+  private setHoveredAnnotation(id: string | null): void {
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    if (this.hoverClearTimer !== null) {
+      win.clearTimeout(this.hoverClearTimer);
+      this.hoverClearTimer = null;
+    }
+    const next = id && this.store?.get(id) ? id : null;
+    if (this.hoverId === next) return;
+    this.hoverId = next;
+    this.syncBindingState();
+  }
+
+  private clearHoveredAnnotationSoon(id?: string): void {
+    const win = this.containerEl.ownerDocument.defaultView ?? window;
+    if (this.hoverClearTimer !== null) win.clearTimeout(this.hoverClearTimer);
+    this.hoverClearTimer = win.setTimeout(() => {
+      this.hoverClearTimer = null;
+      if (!id || this.hoverId === id) this.setHoveredAnnotation(null);
+    }, 120);
+  }
+
+  private setActiveAnnotation(id: string | null): void {
+    const next = id && this.store?.get(id) ? id : null;
+    if (this.activeId === next) return;
+    this.activeId = next;
+    this.syncBindingState();
+  }
+
+  private syncBindingState(): void {
+    const root = this.containerEl;
+    if (this.marginsEl) {
+      for (const card of Array.from(this.marginsEl.querySelectorAll<HTMLElement>(".lpa-margin-card"))) {
+        const id = card.dataset.hlId ?? "";
+        const pinned = !!id && !!this.store?.get(id)?.isPinned;
+        card.toggleClass("is-active", !!id && id === this.activeId);
+        card.toggleClass("is-hover", !!id && id === this.hoverId);
+        card.toggleClass("is-expanded", pinned || (!!id && (id === this.activeId || id === this.hoverId)));
+        syncMarginCardPresentation(card);
+      }
+      this.scheduleRailLayout();
+    }
+    for (const mark of Array.from(root.querySelectorAll<HTMLElement>(".lpa-custom-hl-layer .lpa-highlight"))) {
+      const ids = (mark.dataset.hlIds ?? "").split(/\s+/).filter(Boolean);
+      mark.toggleClass("is-active", !!this.activeId && ids.includes(this.activeId));
+      mark.toggleClass("is-hover", !!this.hoverId && ids.includes(this.hoverId));
+    }
+    for (const tag of Array.from(root.querySelectorAll<HTMLElement>(".lpa-custom-note-layer .lpa-page-tag"))) {
+      const id = tag.dataset.hlId ?? "";
+      tag.toggleClass("is-active", !!id && id === this.activeId);
+      tag.toggleClass("is-hover", !!id && id === this.hoverId);
+    }
+    this.scheduleRailLayout();
+  }
+
+  private toggleListPanel(): void {
+    if (this.listPanelEl) {
+      this.closeListPanel();
+      return;
+    }
+    const root = this.containerEl;
+    if (!this.store) return;
+    const panel = root.createDiv({ cls: "lpa-native-roll" });
+    this.listPanelEl = panel;
+    const head = panel.createDiv({ cls: "lpa-native-roll-head" });
+    head.createSpan({ cls: "lpa-native-roll-title", text: "Annotations" });
+    head.createSpan({ cls: "lpa-native-roll-meta", text: "" });
+    const close = head.createEl("button", {
+      cls: "lpa-native-roll-close",
+      text: "×",
+      attr: { type: "button", "aria-label": "Hide annotations" },
+    });
+    close.onclick = () => this.closeListPanel();
+    const search = panel.createEl("input", {
+      cls: "lpa-native-roll-search",
+      attr: { type: "search", placeholder: "Search annotations", "aria-label": "Search annotations" },
+    });
+    search.value = this.listSearchQuery;
+    search.oninput = () => {
+      this.listSearchQuery = search.value;
+      this.renderListItems();
+    };
+    panel.createDiv({ cls: "lpa-native-roll-list" });
+    this.renderListItems();
+  }
+
+  private closeListPanel(): void {
+    this.listPanelEl?.remove();
+    this.listPanelEl = null;
+  }
+
+  private renderListItems(): void {
+    const panel = this.listPanelEl;
+    const store = this.store;
+    if (!panel || !store) return;
+    const listEl = panel.querySelector<HTMLElement>(".lpa-native-roll-list");
+    const metaEl = panel.querySelector<HTMLElement>(".lpa-native-roll-meta");
+    if (!listEl) return;
+
+    const annotations = [...store.doc.highlights].sort(
+      (a, b) => a.page - b.page || a.created.localeCompare(b.created)
+    );
+    const query = normalizeSearch(this.listSearchQuery);
+    const filtered = query ? annotations.filter((h) => annotationMatchesSearch(h, query)) : annotations;
+    metaEl?.setText(query ? `${filtered.length}/${annotations.length}` : String(annotations.length));
+
+    listEl.empty();
+    if (annotations.length === 0) {
+      listEl.createDiv({ cls: "lpa-native-roll-empty", text: "No annotations yet." });
+      return;
+    }
+    if (filtered.length === 0) {
+      listEl.createDiv({ cls: "lpa-native-roll-empty", text: "No matching annotations." });
+      return;
+    }
+    for (const h of filtered) {
+      const item = listEl.createDiv({ cls: "lpa-native-roll-item" });
+      item.style.setProperty(
+        "--lpa-accent",
+        resolvePalette(annotationColor(h))?.ink ?? markInkColor(annotationColor(h))
+      );
+      const head = item.createDiv({ cls: "lpa-native-roll-item-head" });
+      head.createSpan({ cls: "lpa-native-roll-page", text: `p.${h.page + 1}` });
+      head.createSpan({ cls: "lpa-native-roll-kind", text: annotationKindLabel(h) });
+      item.createDiv({ cls: "lpa-native-roll-text", text: rollPrimaryText(h) });
+      const secondary = rollSecondaryText(h);
+      if (secondary) item.createDiv({ cls: "lpa-native-roll-source", text: secondary });
+      item.onclick = () => void this.revealAnnotation(h.id);
+    }
+  }
+
+  private async revealAnnotation(id: string): Promise<void> {
+    const h = this.store?.get(id);
+    if (!h) return;
+    this.setActiveAnnotation(id);
+    const pageEl = this.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${h.page + 1}"]`);
+    if (pageEl) {
+      pageEl.scrollIntoView({ block: "center" });
+    }
+  }
+
+  async importLegacyAnnotations(): Promise<void> {
+    const store = this.store;
+    if (!this.pdfDoc || !store) return;
+    const pdfName = this.file?.name.normalize("NFC").toLowerCase();
+    if (!pdfName) return;
     const notes = this.app.vault.getMarkdownFiles().filter((f) => {
       const fm = this.app.metadataCache.getFileCache(f)?.frontmatter as any;
       const tgt = fm?.["annotation-target"];
@@ -2257,27 +1566,21 @@ export class PdfAnnotatorView extends FileView {
       docIndex = await buildDocIndex(this.pdfDoc, (d, t) => {
         if (d % 25 === 0 || d === t) notice.setMessage(`Indexing pages ${d}/${t}…`);
       });
-    } catch (e: any) {
+    } catch (e) {
       notice.hide();
       console.error(`${LOG_TAG} legacy import indexing failed`, e);
       new Notice("Import failed while indexing the PDF (see console).");
       return;
     }
 
-    const seen = new Set(
-      this.store.doc.highlights.map((h) => `${h.page}|${dedupeKey(h.text)}`)
-    );
+    const seen = new Set(store.doc.highlights.map((h) => `${h.page}|${dedupeKey(h.text)}`));
     const created: Highlight[] = [];
     const affected = new Set<number>();
     let matched = 0;
-    const unmatched: string[] = [];
 
     for (const a of legacy) {
       const results = anchorQuote(docIndex, a.exact, a.prefix, a.suffix);
-      if (results.length === 0) {
-        unmatched.push(a.exact);
-        continue;
-      }
+      if (results.length === 0) continue;
       matched++;
       const cleanText = a.exact.replace(/\s+/g, " ").trim();
       for (const r of results) {
@@ -2307,473 +1610,86 @@ export class PdfAnnotatorView extends FileView {
       new Notice(`Nothing new to import (matched ${matched}/${legacy.length}; already present).`);
       return;
     }
-    this.store.addMany(created);
-    await this.store.flush();
-    for (const p of affected) {
-      const pv = this.pageViews[p];
-      if (pv?.rendered) this.renderHighlights(pv);
-    }
-    this.renderAnnotationSidebar();
-    new Notice(
-      `Imported ${created.length} highlight(s) from ${notes.length} note(s). ` +
-        `Matched ${matched}/${legacy.length}` +
-        (unmatched.length ? `, ${unmatched.length} unmatched (see console).` : ".")
-    );
-    if (unmatched.length) {
-      console.warn(`${LOG_TAG} ${unmatched.length} legacy quote(s) could not be anchored:`);
-      unmatched.forEach((u) => console.warn("  •", u.slice(0, 90).replace(/\s+/g, " ")));
-    }
-  }
-
-  // ---- zoom ---------------------------------------------------------------
-
-  private zoomBy(factor: number): void {
-    this.setScale(this.scale * factor);
-  }
-
-  private zoomAt(nextScale: number, viewportY: number): void {
-    const scrollerRect = this.pagesEl?.getBoundingClientRect();
-    if (!scrollerRect) {
-      this.setScale(nextScale);
-      return;
-    }
-
-    const anchor =
-      this.pageViews.find((pv) => {
-        const rect = pv.el.getBoundingClientRect();
-        return viewportY >= rect.top && viewportY <= rect.bottom;
-      }) ?? this.pageViews[[...this.visible].sort((a, b) => a - b)[0] ?? 0];
-
-    if (!anchor) {
-      this.setScale(nextScale);
-      return;
-    }
-
-    const oldRect = anchor.el.getBoundingClientRect();
-    const within = (viewportY - oldRect.top) / (anchor.el.offsetHeight || 1);
-    this.setScale(nextScale);
-    this.pagesEl.scrollTop = anchor.el.offsetTop + within * (anchor.el.offsetHeight || 1) - (viewportY - scrollerRect.top);
-  }
-
-  private zoomIn(): void {
-    this.zoomBy(ZOOM_STEP);
-  }
-
-  private zoomOut(): void {
-    this.zoomBy(1 / ZOOM_STEP);
-  }
-
-  private resetZoom(): void {
-    this.setScale(DEFAULT_SCALE);
-  }
-
-  private onPdfWheel(evt: WheelEvent): void {
-    if (!evt.metaKey && !evt.ctrlKey) return;
-    evt.preventDefault();
-    evt.stopPropagation();
-    this.zoomAt(this.scale * (evt.deltaY < 0 ? 1.1 : 1 / 1.1), evt.clientY);
-  }
-
-  private onDocumentKeyDown(evt: KeyboardEvent): void {
-    if ((!evt.metaKey && !evt.ctrlKey) || evt.altKey) return;
-    const target = evt.target instanceof Node ? evt.target : null;
-    const active = this.contentEl.ownerDocument.activeElement;
-    if (!target || (!this.rootEl.contains(target) && !(active && this.rootEl.contains(active)))) return;
-
-    if (evt.key === "+" || evt.key === "=") {
-      evt.preventDefault();
-      this.zoomIn();
-    } else if (evt.key === "-" || evt.key === "_") {
-      evt.preventDefault();
-      this.zoomOut();
-    } else if (evt.key === "0") {
-      evt.preventDefault();
-      this.resetZoom();
-    }
-  }
-
-  private setScale(next: number): void {
-    const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
-    if (Math.abs(clamped - this.scale) < 1e-3) return;
-    this.closeMarkPopover();
-    this.hideSelectionActions(false);
-
-    const anchorIdx = [...this.visible].sort((a, b) => a - b)[0] ?? 0;
-    const anchor = this.pageViews[anchorIdx];
-    const scroller = this.pagesEl;
-    let within = 0;
-    if (anchor) {
-      const oldH = anchor.el.offsetHeight || 1;
-      within = (scroller.scrollTop - anchor.el.offsetTop) / oldH;
-    }
-
-    this.scale = clamped;
-    this.renderEpoch++;
-
-    for (const pv of this.pageViews) {
-      this.teardownPageContent(pv);
-      const sz = this.pageSizes[pv.index] ?? this.defaultSize;
-      pv.el.setCssProps({
-        width: `${Math.floor(sz.w * this.scale)}px`,
-        height: `${Math.floor(sz.h * this.scale)}px`,
-      });
-    }
-
-    if (anchor) {
-      scroller.scrollTop = anchor.el.offsetTop + within * (anchor.el.offsetHeight || 1);
-    }
-
-    for (const idx of this.visible) {
-      const pv = this.pageViews[idx];
-      if (pv) void this.renderPageContent(pv);
-    }
-    this.updateZoomLabel();
-    this.scheduleMarginLayout();
-  }
-
-  private updateZoomLabel(): void {
-    if (this.zoomLabelEl) this.zoomLabelEl.setText(`${Math.round(this.scale * 100)}%`);
-  }
-
-  // ---- status helpers -----------------------------------------------------
-
-  private setStatus(msg: string): void {
-    this.pagesEl?.empty();
-    this.pagesEl?.createDiv({ cls: "lpa-status", text: msg });
-    this.renderAnnotationSidebar();
-  }
-  private setError(msg: string): void {
-    this.pagesEl?.empty();
-    this.pagesEl?.createDiv({ cls: "lpa-status lpa-error", text: msg });
-    this.renderAnnotationSidebar();
-    new Notice("PDF Annotator: failed to open PDF (see view).");
-  }
-
-  // ---- teardown -----------------------------------------------------------
-
-  private clearPagesDom(): void {
-    for (const pv of this.pageViews) this.teardownPageContent(pv);
-  }
-
-  private teardownDocument(): void {
-    this.closeMarkPopover();
-    this.hideSelectionActions(false);
-    this.setTagPlacementMode(false);
-    if (this.marginLayoutRaf !== null) {
-      window.cancelAnimationFrame(this.marginLayoutRaf);
-      this.marginLayoutRaf = null;
-    }
-    if (this.hoverClearTimer !== null) {
-      window.clearTimeout(this.hoverClearTimer);
-      this.hoverClearTimer = null;
-    }
-    if (this.scrollSettleTimer !== null) {
-      window.clearTimeout(this.scrollSettleTimer);
-      this.scrollSettleTimer = null;
-    }
-    this.stopRollScroll();
-    this.bodyEl?.removeClass("is-scrolling");
-    this.renderEpoch++;
-    this.io?.disconnect();
-    this.io = null;
-    this.clearPagesDom();
-    this.pageViews = [];
-    this.visible.clear();
-    this.pageSizes = [];
-    this.store = null;
-    this.activeHighlightId = null;
-    this.hoverHighlightId = null;
-    this.lastVisibleKey = "";
-    if (this.pdfDoc) {
-      try { this.pdfDoc.destroy(); } catch {}
-      this.pdfDoc = null;
-    }
-    if (this.pdfWorker) {
-      try { this.pdfWorker.destroy(); } catch {}
-      this.pdfWorker = null;
-    }
-    this.pagesEl?.empty();
-    this.leftMarginEl?.empty();
-    this.rightMarginEl?.empty();
-    while (this.connectionSvg?.firstChild) this.connectionSvg.firstChild.remove();
-    this.renderAnnotationSidebar();
+    store.addMany(created);
+    await store.flush();
+    for (const p of affected) this.repaintPage(p);
+    this.notifyStoreChanged();
+    new Notice(`Imported ${created.length} highlight(s) from ${notes.length} note(s).`);
   }
 }
 
-class RubberHandle {
-  private markerEl: HTMLElement;
-  private anchor: SelectionActionAnchor | null = null;
-  private snapHandler: () => void = () => {};
-  private closeHandler: () => void = () => {};
-  private clusterEl: HTMLElement | null = null;
-  private tension = 0;
-  private opened = false;
-  private visible = false;
-  private pointerX = 0;
-  private pointerY = 0;
-  private hasPointer = false;
-  private tickRaf: number | null = null;
-  private lastTickT = 0;
-  private closeTimer: number | null = null;
+// ---- Helpers ----
 
-  private readonly onMouseMoveBound = (evt: MouseEvent) => this.onMouseMove(evt);
-  private readonly onKeyDownBound = (evt: KeyboardEvent) => this.onKeyDown(evt);
+function pageContentBox(pageEl: HTMLElement): DOMRect | null {
+  const ref =
+    pageEl.querySelector<HTMLElement>(":scope > .textLayer") ??
+    pageEl.querySelector<HTMLElement>(":scope > .canvasWrapper") ??
+    pageEl.querySelector<HTMLElement>(":scope > .lpa-custom-hl-layer") ??
+    pageEl;
+  const box = ref.getBoundingClientRect();
+  return box.width >= 2 && box.height >= 2 ? box : null;
+}
 
-  constructor(private doc: Document) {
-    this.markerEl = doc.body.createDiv({ cls: "lpa-rubber-handle" });
-    this.markerEl.setAttribute("aria-hidden", "true");
-    doc.addEventListener("mousemove", this.onMouseMoveBound, true);
-    doc.addEventListener("keydown", this.onKeyDownBound, true);
-  }
+function clientToPdfPoint(clientX: number, clientY: number, box: DOMRect, geom: PageGeom): [number, number] {
+  const bx = ((clientX - box.left) / box.width) * geom.w;
+  const by = ((clientY - box.top) / box.height) * geom.h;
+  const p = geom.vp1.convertToPdfPoint(bx, by) as number[];
+  return [p[0], p[1]];
+}
 
-  onSnap(handler: () => void): void {
-    this.snapHandler = handler;
-  }
-
-  onRequestClose(handler: () => void): void {
-    this.closeHandler = handler;
-  }
-
-  show(anchor: SelectionActionAnchor, accent: string): void {
-    this.anchor = anchor;
-    this.clusterEl = null;
-    this.opened = false;
-    this.visible = true;
-    this.tension = 0;
-    this.hasPointer = false;
-    this.lastTickT = 0;
-    this.cancelCloseTimer();
-    this.ensureTick();
-    this.markerEl.removeClasses(["is-left", "is-right", "is-snapped"]);
-    this.markerEl.addClass(`is-${anchor.side}`);
-    this.markerEl.addClass("is-visible");
-    this.markerEl.style.setProperty("--lpa-accent", accent);
-    this.markerEl.setCssProps({ height: `${Math.round(anchor.height)}px` });
-    this.paint(anchor.x, anchor.y);
-  }
-
-  hide(): void {
-    this.cancelCloseTimer();
-    this.anchor = null;
-    this.clusterEl = null;
-    this.opened = false;
-    this.visible = false;
-    this.tension = 0;
-    this.cancelTick();
-    this.markerEl.removeClass("is-visible");
-    this.markerEl.removeClass("is-snapped");
-  }
-
-  closeToRest(): void {
-    this.cancelCloseTimer();
-    this.clusterEl = null;
-    this.opened = false;
-    this.tension = 0;
-    if (this.anchor && this.visible) this.paint(this.anchor.x, this.anchor.y);
-  }
-
-  setClusterElement(el: HTMLElement | null): void {
-    this.clusterEl = el;
-    this.cancelCloseTimer();
-  }
-
-  destroy(): void {
-    this.doc.removeEventListener("mousemove", this.onMouseMoveBound, true);
-    this.doc.removeEventListener("keydown", this.onKeyDownBound, true);
-    this.cancelTick();
-    this.cancelCloseTimer();
-    this.markerEl.remove();
-  }
-
-  private onMouseMove(evt: MouseEvent): void {
-    if (!this.anchor || !this.visible) return;
-    this.pointerX = evt.clientX;
-    this.pointerY = evt.clientY;
-    this.hasPointer = true;
-    this.ensureTick();
-    if (this.opened) {
-      this.trackOpenCluster(evt.clientX, evt.clientY);
-    }
-  }
-
-  private snap(): void {
-    if (this.opened) return;
-    this.opened = true;
-    this.tension = 1;
-    this.markerEl.addClass("is-snapped");
-    window.setTimeout(() => this.markerEl.removeClass("is-snapped"), 260);
-    this.snapHandler();
-  }
-
-  private ensureTick(): void {
-    if (this.tickRaf !== null) return;
-    this.tickRaf = window.requestAnimationFrame((ts) => this.tick(ts));
-  }
-
-  private cancelTick(): void {
-    if (this.tickRaf !== null) {
-      window.cancelAnimationFrame(this.tickRaf);
-      this.tickRaf = null;
-    }
-  }
-
-  private tick(ts: number): void {
-    this.tickRaf = null;
-    if (!this.anchor || !this.visible || this.opened) return;
-    const dt = this.lastTickT ? clamp(1, ts - this.lastTickT, 48) : 16;
-    this.lastTickT = ts;
-    if (this.hasPointer) {
-      const hx = this.anchor.x + (this.anchor.side === "right" ? 0 : 5);
-      const hy = this.anchor.y + this.anchor.height / 2;
-      const dx = this.pointerX - hx;
-      const dy = this.pointerY - hy;
-      const dist = Math.hypot(dx, dy);
-      if (dist <= RUBBER_HANDLE_FEEL.INTENT_RADIUS) {
-        this.tension = clamp(0, this.tension + dt / RUBBER_HANDLE_FEEL.DWELL_MS, RUBBER_HANDLE_FEEL.SNAP_THRESHOLD);
-      } else {
-        this.tension = clamp(0, this.tension - dt / RUBBER_HANDLE_FEEL.DECAY_MS, RUBBER_HANDLE_FEEL.SNAP_THRESHOLD);
-      }
-      this.paint(this.anchor.x, this.anchor.y);
-      if (this.tension >= RUBBER_HANDLE_FEEL.SNAP_THRESHOLD) {
-        this.snap();
-        return;
-      }
-    }
-    this.ensureTick();
-  }
-
-  private trackOpenCluster(x: number, y: number): void {
-    if (this.pointInSafeCluster(x, y)) {
-      this.cancelCloseTimer();
-      return;
-    }
-    if (this.closeTimer !== null) return;
-    this.closeTimer = window.setTimeout(() => {
-      this.closeTimer = null;
-      this.closeHandler();
-    }, RUBBER_HANDLE_FEEL.CLOSE_DELAY);
-  }
-
-  private pointInSafeCluster(x: number, y: number): boolean {
-    const rects = [this.markerEl.getBoundingClientRect()];
-    if (this.clusterEl?.isConnected) rects.push(this.clusterEl.getBoundingClientRect());
-    if (rects.some((r) => pointInInflatedRect(x, y, r, RUBBER_HANDLE_FEEL.SAFE_CORRIDOR_PAD))) return true;
-    if (rects.length < 2) return false;
-    const [a, b] = rects;
-    const left = Math.min(a.left, b.left) - RUBBER_HANDLE_FEEL.SAFE_CORRIDOR_PAD;
-    const right = Math.max(a.right, b.right) + RUBBER_HANDLE_FEEL.SAFE_CORRIDOR_PAD;
-    const top = Math.min(a.top, b.top) - RUBBER_HANDLE_FEEL.SAFE_CORRIDOR_PAD;
-    const bottom = Math.max(a.bottom, b.bottom) + RUBBER_HANDLE_FEEL.SAFE_CORRIDOR_PAD;
-    return x >= left && x <= right && y >= top && y <= bottom;
-  }
-
-  private onKeyDown(evt: KeyboardEvent): void {
-    if (evt.key === "Escape" && this.visible) this.closeHandler();
-  }
-
-  private cancelCloseTimer(): void {
-    if (this.closeTimer !== null) {
-      window.clearTimeout(this.closeTimer);
-      this.closeTimer = null;
-    }
-  }
-
-  private paint(x: number, y: number): void {
-    this.markerEl.setCssProps({
-      left: `${Math.round(x)}px`,
-      top: `${Math.round(y)}px`,
+function rectsToBase(geom: PageGeom, rects: PdfRect[]): BaseRect[] {
+  const out: BaseRect[] = [];
+  for (const r of rects) {
+    const a = geom.vp1.convertToViewportPoint(r.x1, r.y1) as number[];
+    const b = geom.vp1.convertToViewportPoint(r.x2, r.y2) as number[];
+    out.push({
+      left: Math.min(a[0], b[0]),
+      top: Math.min(a[1], b[1]),
+      right: Math.max(a[0], b[0]),
+      bottom: Math.max(a[1], b[1]),
     });
-    const width = RUBBER_HANDLE_FEEL.REST_WIDTH + (RUBBER_HANDLE_FEEL.ACTIVE_WIDTH - RUBBER_HANDLE_FEEL.REST_WIDTH) * this.tension;
-    this.markerEl.setCssProps({ width: `${width.toFixed(2)}px`, transform: "none" });
-    this.markerEl.style.setProperty("--lpa-rubber-tension", this.tension.toFixed(3));
-    this.markerEl.style.setProperty("--lpa-rubber-fill", `${(this.tension * 100).toFixed(1)}%`);
   }
+  return out;
 }
 
-function shortAnnotationText(text: string, max: number): string {
-  const clean = text.replace(/\s+/g, " ").trim();
-  return clean.length > max ? clean.slice(0, max - 1) + "…" : clean;
+function applyPctBox(el: HTMLElement, r: BaseRect, geom: PageGeom): void {
+  el.setCssProps({
+    left: `${(r.left / geom.w) * 100}%`,
+    top: `${(r.top / geom.h) * 100}%`,
+    width: `${((r.right - r.left) / geom.w) * 100}%`,
+    height: `${((r.bottom - r.top) / geom.h) * 100}%`,
+  });
 }
 
-function annotationTypeOf(h: Highlight): "highlight" | "tag" {
-  return h.type === "tag" ? "tag" : "highlight";
+function lineMetricsFor(s: number): LineMetrics {
+  return {
+    weight: clamp(1.4, s * 1.35, 3),
+    dash: Math.max(4, Math.round(s * 5)),
+    dashGap: Math.max(3, Math.round(s * 4)),
+    dot: Math.max(1.4, +(s * 1.6).toFixed(2)),
+    dotGap: Math.max(2.4, +(s * 2.8).toFixed(2)),
+  };
 }
 
-function highlightHasMarginCard(h: Highlight): boolean {
-  if (annotationTypeOf(h) === "tag") return true;
-  return typeof h.note === "string" || !!h.noteContentCJK || !!h.isPinned;
-}
-
-function annotationColor(h: Highlight): string {
-  return h.tagColor ?? h.color;
-}
-
-function tagPreview(h: Highlight): string {
-  const raw = (h.note || h.text || "Note").replace(/\bnote:\s*/gi, " ").replace(/\s+/g, " ").trim();
-  const words = raw.split(/\s+/).filter(Boolean).slice(0, 5).join(" ");
-  return words || "Note";
-}
-
-function annotationKindLabel(h: Highlight): string {
-  if (annotationTypeOf(h) === "tag") return "tag";
-  const st = markStyleOf(h);
-  return st === "highlight" ? "highlight" : MARK_STYLE_LABELS[st].toLowerCase();
-}
-
-function rollPrimaryText(h: Highlight): string {
-  const text = (h.note || h.noteContentCJK || h.text || tagPreview(h)).replace(/\s+/g, " ").trim();
-  return shortAnnotationText(text || "Untitled note", 160);
-}
-
-function rollSecondaryText(h: Highlight): string {
-  const chunks: string[] = [];
-  if (h.note && h.noteContentCJK) chunks.push(h.noteContentCJK);
-  if (annotationTypeOf(h) === "highlight" && h.text) chunks.push(h.text);
-  return shortAnnotationText(chunks.join("  "), 180);
-}
-
-function normalizeSearch(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function annotationMatchesSearch(h: Highlight, query: string): boolean {
-  const haystack = [
-    `p.${h.page + 1}`,
-    String(h.page + 1),
-    annotationKindLabel(h),
-    h.note,
-    h.noteContentCJK,
-    h.text,
-    tagPreview(h),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-  return query.split(" ").every((part) => haystack.includes(part));
-}
-
-function coalesceHighlightRects(rects: HighlightPaintRect[]): HighlightPaintRect[] {
-  const out: HighlightPaintRect[] = [];
+function coalescePaintRects(rects: PaintRect[]): PaintRect[] {
+  const out: PaintRect[] = [];
   const sorted = [...rects].sort(
     (a, b) => a.color.localeCompare(b.color) || a.top - b.top || a.left - b.left || a.order - b.order
   );
-
   for (const rect of sorted) {
-    let cur = cloneHighlightPaintRect(rect);
+    let cur = clonePaintRect(rect);
     for (;;) {
-      const i = out.findIndex((candidate) => canMergeHighlightRects(cur, candidate));
+      const i = out.findIndex((candidate) => canMergePaintRects(cur, candidate));
       if (i < 0) break;
-      cur = mergeHighlightPaintRects(cur, out[i]);
+      cur = mergePaintRects(cur, out[i]);
       out.splice(i, 1);
     }
     out.push(cur);
   }
-
   return out.sort((a, b) => a.top - b.top || a.left - b.left);
 }
 
-function cloneHighlightPaintRect(r: HighlightPaintRect): HighlightPaintRect {
+function clonePaintRect(r: PaintRect): PaintRect {
   return {
     left: r.left,
     top: r.top,
@@ -2786,21 +1702,19 @@ function cloneHighlightPaintRect(r: HighlightPaintRect): HighlightPaintRect {
   };
 }
 
-function canMergeHighlightRects(a: HighlightPaintRect, b: HighlightPaintRect): boolean {
+function canMergePaintRects(a: PaintRect, b: PaintRect): boolean {
   if (a.color !== b.color) return false;
   const minHeight = Math.min(a.bottom - a.top, b.bottom - b.top);
   const verticalOverlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
   if (verticalOverlap < Math.max(1, minHeight * 0.45)) return false;
-
   const aCenter = (a.top + a.bottom) / 2;
   const bCenter = (b.top + b.bottom) / 2;
   if (Math.abs(aCenter - bCenter) > Math.max(2, minHeight * 0.6)) return false;
-
   const horizontalGap = Math.max(a.left, b.left) - Math.min(a.right, b.right);
   return horizontalGap <= Math.max(2, minHeight * 0.25);
 }
 
-function mergeHighlightPaintRects(a: HighlightPaintRect, b: HighlightPaintRect): HighlightPaintRect {
+function mergePaintRects(a: PaintRect, b: PaintRect): PaintRect {
   return {
     left: Math.min(a.left, b.left),
     top: Math.min(a.top, b.top),
@@ -2813,47 +1727,41 @@ function mergeHighlightPaintRects(a: HighlightPaintRect, b: HighlightPaintRect):
   };
 }
 
-function occludeHighlightRects(rects: HighlightPaintRect[]): HighlightPaintRect[] {
-  const out: HighlightPaintRect[] = [];
-  const painted: HighlightPaintRect[] = [];
+function occludePaintRects(rects: PaintRect[]): PaintRect[] {
+  const out: PaintRect[] = [];
+  const painted: PaintRect[] = [];
   const sorted = [...rects].sort((a, b) => a.order - b.order || a.top - b.top || a.left - b.left);
-
   for (const rect of sorted) {
-    let pieces = [cloneHighlightPaintRect(rect)];
+    let pieces = [clonePaintRect(rect)];
     for (const blocker of painted) {
-      const next: HighlightPaintRect[] = [];
-      for (const piece of pieces) next.push(...subtractHighlightPaintRect(piece, blocker));
+      const next: PaintRect[] = [];
+      for (const piece of pieces) next.push(...subtractPaintRect(piece, blocker));
       pieces = next;
       if (pieces.length === 0) break;
     }
     out.push(...pieces);
     painted.push(...pieces);
   }
-
   return out.sort((a, b) => a.top - b.top || a.left - b.left || a.order - b.order);
 }
 
-function subtractHighlightPaintRect(
-  rect: HighlightPaintRect,
-  blocker: HighlightPaintRect
-): HighlightPaintRect[] {
+function subtractPaintRect(rect: PaintRect, blocker: PaintRect): PaintRect[] {
   const left = Math.max(rect.left, blocker.left);
   const top = Math.max(rect.top, blocker.top);
   const right = Math.min(rect.right, blocker.right);
   const bottom = Math.min(rect.bottom, blocker.bottom);
   if (right - left <= 0.5 || bottom - top <= 0.5) return [rect];
-
-  const pieces: HighlightPaintRect[] = [];
-  pushHighlightPiece(pieces, rect, rect.left, rect.top, rect.right, top);
-  pushHighlightPiece(pieces, rect, rect.left, bottom, rect.right, rect.bottom);
-  pushHighlightPiece(pieces, rect, rect.left, top, left, bottom);
-  pushHighlightPiece(pieces, rect, right, top, rect.right, bottom);
+  const pieces: PaintRect[] = [];
+  pushPaintPiece(pieces, rect, rect.left, rect.top, rect.right, top);
+  pushPaintPiece(pieces, rect, rect.left, bottom, rect.right, rect.bottom);
+  pushPaintPiece(pieces, rect, rect.left, top, left, bottom);
+  pushPaintPiece(pieces, rect, right, top, rect.right, bottom);
   return pieces;
 }
 
-function pushHighlightPiece(
-  pieces: HighlightPaintRect[],
-  source: HighlightPaintRect,
+function pushPaintPiece(
+  pieces: PaintRect[],
+  source: PaintRect,
   left: number,
   top: number,
   right: number,
@@ -2872,7 +1780,36 @@ function pushHighlightPiece(
   });
 }
 
-interface Rgba { r: number; g: number; b: number; a: number; }
+function mergeLineRects(rects: BaseRect[]): BaseRect[] {
+  const clean = rects.filter((r) => r.right - r.left >= 0.5 && r.bottom - r.top >= 0.5);
+  const lines: BaseRect[] = [];
+  for (const r of [...clean].sort((a, b) => a.top - b.top || a.left - b.left)) {
+    const rCenter = (r.top + r.bottom) / 2;
+    const minH = r.bottom - r.top;
+    const line = lines.find((l) => {
+      const lCenter = (l.top + l.bottom) / 2;
+      const h = Math.min(minH, l.bottom - l.top);
+      const overlap = Math.min(l.bottom, r.bottom) - Math.max(l.top, r.top);
+      return overlap >= h * 0.5 && Math.abs(lCenter - rCenter) <= Math.max(2, h * 0.6);
+    });
+    if (line) {
+      line.left = Math.min(line.left, r.left);
+      line.right = Math.max(line.right, r.right);
+      line.top = Math.min(line.top, r.top);
+      line.bottom = Math.max(line.bottom, r.bottom);
+    } else {
+      lines.push({ ...r });
+    }
+  }
+  return lines.sort((a, b) => a.top - b.top || a.left - b.left);
+}
+
+interface Rgba {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
 
 function parseColor(color: string): Rgba | null {
   const rgb = color.match(
@@ -2886,83 +1823,36 @@ function parseColor(color: string): Rgba | null {
       a: rgb[4] === undefined ? 1 : clampCssAlpha(Number(rgb[4])),
     };
   }
-  const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
   if (hex) {
-    const value = hex[1].length === 3 ? hex[1].split("").map((ch) => ch + ch).join("") : hex[1];
+    const raw = hex[1];
+    let value = raw;
+    let alpha = 1;
+    if (raw.length === 3) {
+      value = raw.split("").map((ch) => ch + ch).join("");
+    } else if (raw.length === 8) {
+      value = raw.slice(0, 6);
+      alpha = parseInt(raw.slice(6, 8), 16) / 255;
+    }
     return {
       r: parseInt(value.slice(0, 2), 16),
       g: parseInt(value.slice(2, 4), 16),
       b: parseInt(value.slice(4, 6), 16),
-      a: 1,
+      a: alpha,
     };
   }
   return null;
 }
 
-/** Fill color for a highlight: normalized to the muted palette, alpha-capped so
- * stacked fills can't darken into a muddy patch and text stays readable. */
 function highlightPaintColor(color: string): string {
   const pal = resolvePalette(color);
   const fill = pal?.fill ?? color;
   const c = parseColor(fill);
   if (!c) return fill;
-  const a = baseHighlightAlpha(c, pal);
+  const a = pal?.highlightAlpha ?? Math.min(c.a === 1 ? MAX_HIGHLIGHT_ALPHA : c.a, MAX_HIGHLIGHT_ALPHA);
   return `rgba(${c.r}, ${c.g}, ${c.b}, ${clampCssAlpha(a)})`;
 }
 
-function activeHighlightPaintColor(color: string): string {
-  const c = highlightBaseColor(color);
-  if (!c) return highlightPaintColor(color);
-  const a = activeHighlightAlpha(c);
-  return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
-}
-
-function activeHighlightGlossColor(color: string): string {
-  const c = highlightBaseColor(color);
-  if (!c) return highlightPaintColor(color);
-  const a = clampCssAlpha(activeHighlightAlpha(c) * 0.76);
-  return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
-}
-
-function activeHighlightBridgeColor(color: string): string {
-  const c = highlightBaseColor(color);
-  if (!c) return highlightPaintColor(color);
-  // Inter-line connector. Lighter than the text band, but present enough that a
-  // multi-line passage reads as one continuous chunk of ink rather than rows.
-  const a = clampCssAlpha(activeHighlightAlpha(c) * 0.5);
-  return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
-}
-
-function highlightBaseColor(color: string): Rgba | null {
-  const pal = resolvePalette(color);
-  const fill = pal?.fill ?? color;
-  const parsed = parseColor(fill);
-  if (!parsed) return null;
-  return { ...parsed, a: baseHighlightAlpha(parsed, pal) };
-}
-
-function baseHighlightAlpha(color: Rgba, pal: ReturnType<typeof resolvePalette>): number {
-  return pal?.highlightAlpha ?? Math.min(color.a === 1 ? MAX_HIGHLIGHT_ALPHA : color.a, MAX_HIGHLIGHT_ALPHA);
-}
-
-function activeHighlightAlpha(color: Rgba): number {
-  // Emphasis is the SAME hue, just denser ink. Because the highlight layer is
-  // multiply-blended, glyphs stay black at any alpha, so the active fill can sit
-  // well above the resting cap without muddying text — it only deepens the
-  // marker color over the white paper.
-  return clampCssAlpha(Math.min(0.85, Math.max(color.a + 0.2, color.a * 1.4)));
-}
-
-function stickerBackgroundColor(color: string, alpha: number): string {
-  const pal = resolvePalette(color);
-  const fill = pal?.cardFill ?? pal?.fill ?? color;
-  const c = parseColor(fill);
-  if (!c) return fill;
-  return `rgba(${c.r}, ${c.g}, ${c.b}, ${clampCssAlpha(alpha)})`;
-}
-
-/** Crisp stroke color for line/box styles when a stored color has no palette
- * entry (custom colors): darken the hue and make it near-opaque. */
 function markInkColor(color: string): string {
   const c = parseColor(color);
   if (!c) return color;
@@ -2990,23 +1880,57 @@ function clamp(min: number, value: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function pointInInflatedRect(x: number, y: number, rect: DOMRect, pad: number): boolean {
-  return x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad;
+function annotationTypeOf(h: Highlight): "highlight" | "tag" {
+  return h.type === "tag" ? "tag" : "highlight";
 }
 
-function isSelectionBackward(sel: Selection): boolean {
-  const anchor = sel.anchorNode;
-  const focus = sel.focusNode;
-  if (!anchor || !focus) return false;
-  if (anchor === focus) return sel.anchorOffset > sel.focusOffset;
-  const pos = anchor.compareDocumentPosition(focus);
-  return !!(pos & Node.DOCUMENT_POSITION_PRECEDING);
+function annotationColor(h: Highlight): string {
+  return h.tagColor ?? h.color;
 }
 
-function selectionFocusFallbackRect(rects: DOMRect[], backward: boolean): DOMRect | null {
-  const clean = rects.filter((r) => r.width >= 1 && r.height >= 1);
-  if (!clean.length) return null;
-  return backward ? clean[0] : clean[clean.length - 1];
+function tagPreview(h: Highlight): string {
+  const raw = (h.note || h.text || "Note").replace(/\bnote:\s*/gi, " ").replace(/\s+/g, " ").trim();
+  const words = raw.split(/\s+/).filter(Boolean).slice(0, 5).join(" ");
+  return words || "Note";
+}
+
+function annotationKindLabel(h: Highlight): string {
+  if (annotationTypeOf(h) === "tag") return "tag";
+  const st = markStyleOf(h);
+  return st === "highlight" ? "highlight" : MARK_STYLE_LABELS[st].toLowerCase();
+}
+
+function rollPrimaryText(h: Highlight): string {
+  const text = (h.note || h.noteContentCJK || h.text || tagPreview(h)).replace(/\s+/g, " ").trim();
+  return text || "Untitled note";
+}
+
+function rollSecondaryText(h: Highlight): string {
+  const chunks: string[] = [];
+  if (h.note && h.noteContentCJK) chunks.push(h.noteContentCJK);
+  if (annotationTypeOf(h) === "highlight" && h.text) chunks.push(h.text);
+  return chunks.join("  ");
+}
+
+function normalizeSearch(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function annotationMatchesSearch(h: Highlight, query: string): boolean {
+  const haystack = [
+    `p.${h.page + 1}`,
+    String(h.page + 1),
+    annotationKindLabel(h),
+    h.note,
+    h.noteContentCJK,
+    h.text,
+    tagPreview(h),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  return query.split(" ").every((part) => haystack.includes(part));
 }
 
 function measureMarginCardHeight(card: HTMLElement): number {
@@ -3054,58 +1978,12 @@ function parseCssPixelValue(value: string, fallback = Number.POSITIVE_INFINITY):
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/**
- * Merge a mark's viewport rects into one continuous rect per visual line, so a
- * decorative stroke (underline/strike/box) is unbroken across word gaps and
- * wraps cleanly line-by-line.
- */
-function mergeLineRects(
-  rects: Array<{ left: number; top: number; right: number; bottom: number }>
-): Array<{ left: number; top: number; right: number; bottom: number }> {
-  const clean = rects.filter((r) => r.right - r.left >= 0.5 && r.bottom - r.top >= 0.5);
-  const lines: Array<{ left: number; top: number; right: number; bottom: number }> = [];
-  for (const r of [...clean].sort((a, b) => a.top - b.top || a.left - b.left)) {
-    const rCenter = (r.top + r.bottom) / 2;
-    const minH = r.bottom - r.top;
-    const line = lines.find((l) => {
-      const lCenter = (l.top + l.bottom) / 2;
-      const h = Math.min(minH, l.bottom - l.top);
-      const overlap = Math.min(l.bottom, r.bottom) - Math.max(l.top, r.top);
-      return overlap >= h * 0.5 && Math.abs(lCenter - rCenter) <= Math.max(2, h * 0.6);
-    });
-    if (line) {
-      line.left = Math.min(line.left, r.left);
-      line.right = Math.max(line.right, r.right);
-      line.top = Math.min(line.top, r.top);
-      line.bottom = Math.max(line.bottom, r.bottom);
-    } else {
-      lines.push({ ...r });
-    }
-  }
-  return lines.sort((a, b) => a.top - b.top || a.left - b.left);
-}
-
-/**
- * Build a tiny WYSIWYG preview of a mark style inside a chooser button: the
- * letter "A" wearing that exact decoration, in the current ink. Lets the chooser
- * present style and color as two small additive rows (no style×color grid).
- */
-function buildStylePreview(btn: HTMLElement, style: MarkStyle): void {
-  btn.empty();
-  const s = btn.createSpan({ cls: `lpa-style-sample lpa-style-sample--${style}`, text: "A" });
-  s.setAttribute("aria-hidden", "true");
-}
-
-function highlightIdsForElement(el: HTMLElement): string[] {
-  return (el.dataset.hlIds ?? "").split(/\s+/).filter(Boolean);
+function dedupeKey(text: string): string {
+  return text.replace(/\s+/g, "").toLowerCase().slice(0, 80);
 }
 
 function cssEscape(value: string): string {
   const escape = typeof CSS !== "undefined" ? (CSS as any).escape : null;
   if (typeof escape === "function") return escape(value);
   return value.replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
-}
-
-function dedupeKey(text: string): string {
-  return text.replace(/\s+/g, "").toLowerCase().slice(0, 80);
 }
