@@ -34,7 +34,6 @@
 import { App, Menu, Notice, Plugin, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { pdfjsLib, initPdfEngine, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
 import {
-  AnnotationStore,
   DEFAULT_COLOR,
   PALETTE,
   resolvePalette,
@@ -59,6 +58,11 @@ import {
   marginCardSourceText,
   syncMarginCardPresentation,
 } from "./margin-card";
+import { AnnotationSetWorkspace } from "./annotation-sets";
+import { AnnotationSetManagerModal } from "./annotation-set-ui";
+import { AiAnnotationModal } from "./ai-ui";
+import { AiJobService } from "./ai-jobs";
+import type { AiConnectionSettings, ConfigureAiConnection } from "./ai-provider";
 
 const MAX_HIGHLIGHT_ALPHA = 0.46;
 /** DOM that belongs to us; mutations inside it must not re-trigger syncing. */
@@ -144,7 +148,16 @@ export class NativeOverlayManager {
     private plugin: Plugin,
     private enabled: () => boolean,
     private getAnnotationPathOptions: () => AnnotationPathOptions,
-    private bundleManager?: PdfBundleManager
+    private bundleManager?: PdfBundleManager,
+    private getAiConnection: () => AiConnectionSettings = () => ({
+      provider: "openai",
+      protocol: "openai-compatible",
+      baseUrl: "https://api.openai.com/v1",
+      model: "",
+      apiKey: "",
+    }),
+    private aiJobs: AiJobService = new AiJobService(),
+    private configureAiConnection?: ConfigureAiConnection
   ) {}
 
   private get app(): App {
@@ -218,7 +231,10 @@ export class NativeOverlayManager {
       leaf,
       file,
       this.getAnnotationPathOptions,
-      this.bundleManager
+      this.bundleManager,
+      this.getAiConnection,
+      this.aiJobs,
+      this.configureAiConnection
     );
     this.overlays.set(leaf, overlay);
     this.refresh();
@@ -312,7 +328,9 @@ export class NativeOverlayManager {
  */
 export class NativePdfOverlay {
   private destroyed = false;
-  private store: AnnotationStore | null = null;
+  private store: AnnotationSetWorkspace | null = null;
+  private storeChangeCleanup: (() => void) | null = null;
+  private jobsRootPath: string | null = null;
   private pdfDoc: any | null = null;
   private pageLabelsPromise: Promise<string[] | null> | null = null;
   private pdfWorker: any | null = null;
@@ -333,6 +351,8 @@ export class NativePdfOverlay {
   private editPopoverCleanup: (() => void) | null = null;
 
   private tagBtn: HTMLButtonElement | null = null;
+  private setsBtn: HTMLButtonElement | null = null;
+  private aiBtn: HTMLButtonElement | null = null;
   private listBtn: HTMLButtonElement | null = null;
   private countEl: HTMLElement | null = null;
   private listPanelEl: HTMLElement | null = null;
@@ -362,7 +382,16 @@ export class NativePdfOverlay {
     private leaf: WorkspaceLeaf,
     readonly file: TFile,
     private getAnnotationPathOptions: () => AnnotationPathOptions,
-    private bundleManager?: PdfBundleManager
+    private bundleManager?: PdfBundleManager,
+    private getAiConnection: () => AiConnectionSettings = () => ({
+      provider: "openai",
+      protocol: "openai-compatible",
+      baseUrl: "https://api.openai.com/v1",
+      model: "",
+      apiKey: "",
+    }),
+    private aiJobs: AiJobService = new AiJobService(),
+    private configureAiConnection?: ConfigureAiConnection
   ) {}
 
   private get app(): App {
@@ -396,26 +425,34 @@ export class NativePdfOverlay {
     const pathOptions = this.getAnnotationPathOptions();
     let annotationPath = sidecarPathFor(this.file.path, pathOptions);
     let fallbackPaths = [legacySidecarPathFor(this.file.path)];
-    let migrateFallback = false;
     let annotationBackupPath: string | undefined;
+    let annotationSetsRootPath = `${annotationPath}.sets`;
+    let annotationSetsIndexPath = `${annotationSetsRootPath}/index.json`;
+    let aiJobsRootPath = `${annotationPath}.ai-jobs`;
     if (this.bundleManager) {
       const binding = await this.bundleManager.prepare(this.file, data, fingerprint, pathOptions);
       annotationPath = binding.annotationPath;
       fallbackPaths = binding.fallbackAnnotationPaths;
-      migrateFallback = true;
       annotationBackupPath = binding.annotationBackupPath;
+      annotationSetsRootPath = binding.annotationSetsRootPath;
+      annotationSetsIndexPath = binding.annotationSetsIndexPath;
+      aiJobsRootPath = binding.aiJobsRootPath;
     }
-    this.store = new AnnotationStore(
-      this.app.vault.adapter,
-      annotationPath,
-      this.file.basename,
-      this.file.path,
+    this.store = await AnnotationSetWorkspace.open({
+      adapter: this.app.vault.adapter,
+      setsRootPath: annotationSetsRootPath,
+      indexPath: annotationSetsIndexPath,
+      legacyAnnotationPath: annotationPath,
+      legacyAnnotationBackupPath: annotationBackupPath,
+      legacyFallbackPaths: fallbackPaths,
+      pdfBasename: this.file.basename,
+      pdfVaultPath: this.file.path,
       fingerprint,
-      fallbackPaths,
-      migrateFallback,
-      annotationBackupPath
-    );
-    await this.store.load();
+    });
+    this.storeChangeCleanup = this.store.onChange(() => this.onAnnotationSetsChanged());
+    for (const message of this.store.recoveryMessages) new Notice(message);
+    this.jobsRootPath = aiJobsRootPath;
+    this.cleanups.push(this.aiJobs.subscribe(() => this.syncToolbarState()));
     if (this.destroyed) return;
     this.notifyStoreChanged();
 
@@ -503,8 +540,12 @@ export class NativePdfOverlay {
 
     const store = this.store;
     this.store = null;
+    this.storeChangeCleanup?.();
+    this.storeChangeCleanup = null;
+    if (this.jobsRootPath) this.aiJobs.pauseForRoot(this.jobsRootPath);
+    this.jobsRootPath = null;
     if (store) {
-      void store.flush().catch((e) => console.error(`${LOG_TAG} failed to save annotations`, e));
+      void store.release().catch((e) => console.error(`${LOG_TAG} failed to save annotations`, e));
     }
     this.releasePdf();
     this.geoms.clear();
@@ -544,6 +585,29 @@ export class NativePdfOverlay {
     }
     this.removeToolbarButtons();
 
+    this.setsBtn = group.createEl("button", {
+      cls: "lpa-native-set-btn",
+      text: "My notes ▾",
+      attr: { type: "button", "aria-label": "Manage annotation sets", title: "Manage annotation sets" },
+    });
+    this.setsBtn.onclick = (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (!this.store) return;
+      new AnnotationSetManagerModal(this.app, this.store, () => this.onAnnotationSetsChanged(), this.setsBtn!).open();
+    };
+
+    this.aiBtn = group.createEl("button", {
+      cls: "lpa-native-ai-btn",
+      text: "AI",
+      attr: { type: "button", "aria-label": "Annotate with AI", title: "Annotate with AI" },
+    });
+    this.aiBtn.onclick = (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.openAiAnnotationModal();
+    };
+
     this.tagBtn = group.createEl("button", {
       cls: "lpa-native-btn clickable-icon",
       attr: { type: "button", "aria-label": "Place a page note tag", title: "Place a page note tag" },
@@ -572,6 +636,10 @@ export class NativePdfOverlay {
   }
 
   private removeToolbarButtons(): void {
+    this.setsBtn?.remove();
+    this.setsBtn = null;
+    this.aiBtn?.remove();
+    this.aiBtn = null;
     this.tagBtn?.remove();
     this.tagBtn = null;
     this.listBtn?.remove();
@@ -585,6 +653,54 @@ export class NativePdfOverlay {
     this.tagBtn?.setAttribute("aria-pressed", this.tagMode ? "true" : "false");
     this.listBtn?.toggleClass("is-active", !!this.listPanelEl);
     this.listBtn?.setAttribute("aria-pressed", this.listPanelEl ? "true" : "false");
+    if (this.setsBtn && this.store) {
+      const active = this.store.activeSet();
+      const visible = this.store.listSets().filter((set) => this.store?.isVisible(set.id)).length;
+      this.setsBtn.setText(`${active.name}${visible > 1 ? ` +${visible - 1}` : ""} ▾`);
+      this.setsBtn.setAttribute("title", `Writing to ${active.name}; ${visible} visible set${visible === 1 ? "" : "s"}`);
+    }
+    if (this.aiBtn) {
+      const active = this.jobsRootPath ? this.aiJobs.activeForRoot(this.jobsRootPath)[0] : null;
+      if (active) {
+        const total = active.toPage - active.fromPage + 1;
+        const percent = total > 0 ? Math.round((active.completedPages / total) * 100) : 0;
+        this.aiBtn.setText(`AI ${percent}%`);
+        this.aiBtn.addClass("is-active");
+        this.aiBtn.setAttribute("title", `${active.setName}: ${active.message}`);
+      } else {
+        this.aiBtn.setText("AI");
+        this.aiBtn.removeClass("is-active");
+        this.aiBtn.setAttribute("title", "Annotate with AI");
+      }
+    }
+  }
+
+  private openAiAnnotationModal(): void {
+    if (!this.store || !this.pdfDoc || !this.jobsRootPath) {
+      new Notice("The annotation overlay is still loading.");
+      return;
+    }
+    new AiAnnotationModal(this.app, {
+      anchor: this.aiBtn!,
+      workspace: this.store,
+      pdfDoc: this.pdfDoc,
+      jobsRootPath: this.jobsRootPath,
+      getConnection: this.getAiConnection,
+      configureConnection: this.configureAiConnection,
+      jobService: this.aiJobs,
+      changed: () => this.onAnnotationSetsChanged(),
+    }).open();
+  }
+
+  private onAnnotationSetsChanged(): void {
+    this.syncToolbarState();
+    this.contentRoot
+      ?.querySelectorAll<HTMLElement>(".page[data-page-number]")
+      .forEach((page) => {
+        const number = Number(page.getAttribute("data-page-number"));
+        if (Number.isFinite(number) && number > 0) this.repaintPage(number - 1);
+      });
+    this.notifyStoreChanged();
   }
 
   private setTagMode(on: boolean): void {
@@ -1784,6 +1900,11 @@ export class NativePdfOverlay {
     const head = card.createDiv({ cls: "lpa-margin-card-head" });
     head.createSpan({ cls: "lpa-margin-dot", attr: { "aria-hidden": "true" } });
     head.createSpan({ cls: "lpa-margin-page", text: `p.${h.page + 1}` });
+    const set = this.store?.setMeta(h.setId);
+    if (set) {
+      const chip = head.createSpan({ cls: "lpa-set-chip", text: set.name });
+      chip.style.setProperty("--lpa-set-accent", set.accent);
+    }
     const pin = head.createEl("button", { cls: "lpa-pin-btn", text: "⌖" });
     pin.onclick = (evt) => {
       evt.preventDefault();
@@ -2223,6 +2344,11 @@ export class NativePdfOverlay {
       const head = item.createDiv({ cls: "lpa-native-roll-item-head" });
       head.createSpan({ cls: "lpa-native-roll-page", text: `p.${h.page + 1}` });
       head.createSpan({ cls: "lpa-native-roll-kind", text: annotationKindLabel(h) });
+      const set = store.setMeta(h.setId);
+      if (set) {
+        const chip = head.createSpan({ cls: "lpa-set-chip", text: set.name });
+        chip.style.setProperty("--lpa-set-accent", set.accent);
+      }
       item.createDiv({ cls: "lpa-native-roll-text", text: rollPrimaryText(h) });
       const secondary = rollSecondaryText(h);
       if (secondary) item.createDiv({ cls: "lpa-native-roll-source", text: secondary });
@@ -2240,25 +2366,30 @@ export class NativePdfOverlay {
     pageEl.scrollIntoView({ block: "center" });
     // This routine polls through the native viewer's lazy page render and then
     // zooms out only until the selected card has readable side space.
-    void this.ensureReadableRailForAnnotation(id);
+    await this.ensureReadableRailForAnnotation(id);
+    if (this.destroyed || this.activeId !== id) return;
     this.scheduleRailLayout();
-    // The native viewer renders lazily; poll briefly for the painted mark.
+    // Zoom can move the target page or replace its DOM. Locate it again and
+    // center the actual mark only after automatic zoom has settled.
     const isTag = annotationTypeOf(h) === "tag";
     for (let i = 0; i < 12; i++) {
       await sleep(150);
-      if (this.destroyed || !pageEl.isConnected) return;
+      if (this.destroyed || this.activeId !== id) return;
+      const currentPage = root.querySelector<HTMLElement>(`.page[data-page-number="${h.page + 1}"]`);
+      if (!currentPage) continue;
       let el: HTMLElement | null = null;
       if (isTag) {
-        el = pageEl.querySelector<HTMLElement>(
+        el = currentPage.querySelector<HTMLElement>(
           `.lpa-native-note-layer .lpa-page-tag[data-hl-id="${cssEscape(id)}"]`
         );
       } else {
         el =
-          Array.from(pageEl.querySelectorAll<HTMLElement>(".lpa-native-hl-layer .lpa-highlight")).find(
+          Array.from(currentPage.querySelectorAll<HTMLElement>(".lpa-native-hl-layer .lpa-highlight")).find(
             (cand) => (cand.dataset.hlIds ?? "").split(/\s+/).includes(id)
           ) ?? null;
       }
       if (el) {
+        el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
         el.addClass("lpa-flash");
         const flashed = el;
         window.setTimeout(() => flashed.removeClass("lpa-flash"), 1200);

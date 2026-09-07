@@ -12,7 +12,6 @@
 import { FileView, TFile, WorkspaceLeaf, Notice, Menu } from "obsidian";
 import { pdfjsLib, initPdfEngine, getPdfEngineStatus, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
 import {
-  AnnotationStore,
   DEFAULT_COLOR,
   PALETTE,
   resolvePalette,
@@ -37,6 +36,11 @@ import {
   marginCardSourceText,
   syncMarginCardPresentation,
 } from "./margin-card";
+import { AnnotationSetWorkspace } from "./annotation-sets";
+import { AnnotationSetManagerModal } from "./annotation-set-ui";
+import { AiAnnotationModal } from "./ai-ui";
+import { AiJobService } from "./ai-jobs";
+import type { AiConnectionSettings, ConfigureAiConnection } from "./ai-provider";
 
 export const VIEW_TYPE_PDF_ANNOTATOR = "local-pdf-annotator-view";
 
@@ -128,6 +132,8 @@ export class PdfAnnotatorView extends FileView {
   private rootEl!: HTMLElement;
   private toolbarEl!: HTMLElement;
   private titleEl!: HTMLElement;
+  private setsBtnEl!: HTMLButtonElement;
+  private aiBtnEl!: HTMLButtonElement;
   private zoomOutBtnEl!: HTMLButtonElement;
   private zoomLabelEl!: HTMLElement;
   private zoomInBtnEl!: HTMLButtonElement;
@@ -151,7 +157,9 @@ export class PdfAnnotatorView extends FileView {
 
   private pdfDoc: any | null = null;
   private pdfWorker: any | null = null;
-  private store: AnnotationStore | null = null;
+  private store: AnnotationSetWorkspace | null = null;
+  private storeChangeCleanup: (() => void) | null = null;
+  private jobsRootPath: string | null = null;
   private currentColor = DEFAULT_COLOR;
   private currentStyle: MarkStyle = "highlight";
   private markPopoverCleanup: (() => void) | null = null;
@@ -186,7 +194,16 @@ export class PdfAnnotatorView extends FileView {
   constructor(
     leaf: WorkspaceLeaf,
     private getAnnotationPathOptions: () => AnnotationPathOptions = () => ({}),
-    private bundleManager?: PdfBundleManager
+    private bundleManager?: PdfBundleManager,
+    private getAiConnection: () => AiConnectionSettings = () => ({
+      provider: "openai",
+      protocol: "openai-compatible",
+      baseUrl: "https://api.openai.com/v1",
+      model: "",
+      apiKey: "",
+    }),
+    private aiJobs: AiJobService = new AiJobService(),
+    private configureAiConnection?: ConfigureAiConnection
   ) {
     super(leaf);
     this.navigation = true;
@@ -235,6 +252,7 @@ export class PdfAnnotatorView extends FileView {
       this.rubberHandle?.destroy();
       this.rubberHandle = null;
     });
+    this.register(this.aiJobs.subscribe(() => this.updateAiButton()));
   }
 
   async onClose(): Promise<void> {
@@ -252,6 +270,21 @@ export class PdfAnnotatorView extends FileView {
     this.rootEl = container.createDiv({ cls: "lpa-root" });
     this.toolbarEl = this.rootEl.createDiv({ cls: "lpa-toolbar", attr: { "aria-label": "PDF annotation controls" } });
     this.titleEl = this.toolbarEl.createSpan({ cls: "lpa-title", text: "PDF Annotator" });
+    this.setsBtnEl = this.toolbarEl.createEl("button", {
+      cls: "lpa-sets-button",
+      text: "My notes ▾",
+      attr: { "aria-label": "Manage annotation sets", title: "Manage annotation sets" },
+    }) as HTMLButtonElement;
+    this.setsBtnEl.onclick = () => {
+      if (!this.store) return;
+      new AnnotationSetManagerModal(this.app, this.store, () => this.onAnnotationSetsChanged(), this.setsBtnEl).open();
+    };
+    this.aiBtnEl = this.toolbarEl.createEl("button", {
+      cls: "lpa-ai-button",
+      text: "AI",
+      attr: { "aria-label": "Annotate with AI", title: "Annotate with AI" },
+    }) as HTMLButtonElement;
+    this.aiBtnEl.onclick = () => this.openAiAnnotationModal();
     this.zoomOutBtnEl = this.toolbarEl.createEl("button", {
       cls: "lpa-zoom-button",
       text: "-",
@@ -523,15 +556,19 @@ export class PdfAnnotatorView extends FileView {
     const pathOptions = this.getAnnotationPathOptions();
     let annotationPath = sidecarPathFor(file.path, pathOptions);
     let fallbackPaths = [legacySidecarPathFor(file.path)];
-    let migrateFallback = false;
     let annotationBackupPath: string | undefined;
+    let annotationSetsRootPath = `${annotationPath}.sets`;
+    let annotationSetsIndexPath = `${annotationSetsRootPath}/index.json`;
+    let aiJobsRootPath = `${annotationPath}.ai-jobs`;
     if (this.bundleManager) {
       try {
         const binding = await this.bundleManager.prepare(file, data, fingerprint, pathOptions);
         annotationPath = binding.annotationPath;
         fallbackPaths = binding.fallbackAnnotationPaths;
-        migrateFallback = true;
         annotationBackupPath = binding.annotationBackupPath;
+        annotationSetsRootPath = binding.annotationSetsRootPath;
+        annotationSetsIndexPath = binding.annotationSetsIndexPath;
+        aiJobsRootPath = binding.aiJobsRootPath;
       } catch (e: any) {
         console.error(`${LOG_TAG} could not prepare managed PDF bundle`, e);
         this.setError(
@@ -540,17 +577,22 @@ export class PdfAnnotatorView extends FileView {
         return;
       }
     }
-    this.store = new AnnotationStore(
-      this.app.vault.adapter,
-      annotationPath,
-      file.basename,
-      file.path,
+    this.store = await AnnotationSetWorkspace.open({
+      adapter: this.app.vault.adapter,
+      setsRootPath: annotationSetsRootPath,
+      indexPath: annotationSetsIndexPath,
+      legacyAnnotationPath: annotationPath,
+      legacyAnnotationBackupPath: annotationBackupPath,
+      legacyFallbackPaths: fallbackPaths,
+      pdfBasename: file.basename,
+      pdfVaultPath: file.path,
       fingerprint,
-      fallbackPaths,
-      migrateFallback,
-      annotationBackupPath
-    );
-    await this.store.load();
+    });
+    this.storeChangeCleanup = this.store.onChange(() => this.onAnnotationSetsChanged());
+    for (const message of this.store.recoveryMessages) new Notice(message);
+    this.jobsRootPath = aiJobsRootPath;
+    this.updateAnnotationSetButton();
+    this.updateAiButton();
 
     await this.buildPages();
     this.renderAnnotationSidebar();
@@ -574,6 +616,61 @@ export class PdfAnnotatorView extends FileView {
     } catch (e) {
       console.error(`${LOG_TAG} failed to save annotations`, e);
     }
+  }
+
+  private updateAnnotationSetButton(): void {
+    if (!this.setsBtnEl) return;
+    if (!this.store) {
+      this.setsBtnEl.setText("My notes ▾");
+      return;
+    }
+    const active = this.store.activeSet();
+    const visible = this.store.listSets().filter((set) => this.store?.isVisible(set.id)).length;
+    this.setsBtnEl.setText(`${active.name}${visible > 1 ? ` +${visible - 1}` : ""} ▾`);
+    this.setsBtnEl.setAttribute("title", `Writing to ${active.name}; ${visible} visible set${visible === 1 ? "" : "s"}`);
+  }
+
+  private onAnnotationSetsChanged(): void {
+    this.updateAnnotationSetButton();
+    for (const pv of this.pageViews) {
+      if (!pv.rendered) continue;
+      this.renderHighlights(pv);
+      this.renderTags(pv);
+    }
+    this.renderAnnotationSidebar();
+  }
+
+  private openAiAnnotationModal(): void {
+    if (!this.store || !this.pdfDoc || !this.jobsRootPath) {
+      new Notice("Open a PDF before starting AI annotation.");
+      return;
+    }
+    new AiAnnotationModal(this.app, {
+      anchor: this.aiBtnEl,
+      workspace: this.store,
+      pdfDoc: this.pdfDoc,
+      jobsRootPath: this.jobsRootPath,
+      getConnection: this.getAiConnection,
+      configureConnection: this.configureAiConnection,
+      jobService: this.aiJobs,
+      changed: () => this.onAnnotationSetsChanged(),
+    }).open();
+  }
+
+  private updateAiButton(): void {
+    if (!this.aiBtnEl) return;
+    const active = this.jobsRootPath ? this.aiJobs.activeForRoot(this.jobsRootPath)[0] : null;
+    if (!active) {
+      this.aiBtnEl.setText("AI");
+      this.aiBtnEl.removeClass("is-active");
+      this.aiBtnEl.setAttribute("title", "Annotate with AI");
+      return;
+    }
+    const total = active.toPage - active.fromPage + 1;
+    const percent = total > 0 ? Math.round((active.completedPages / total) * 100) : 0;
+    this.aiBtnEl.setText(`AI ${percent}%`);
+    this.aiBtnEl.addClass("is-active");
+    this.aiBtnEl.setAttribute("title", `${active.setName}: ${active.message}`);
   }
 
   // ---- page layout + lazy render -----------------------------------------
@@ -709,6 +806,11 @@ export class PdfAnnotatorView extends FileView {
     head.createSpan({ cls: "lpa-roll-dot", attr: { "aria-hidden": "true" } });
     head.createSpan({ cls: "lpa-roll-page", text: `p.${h.page + 1}` });
     head.createSpan({ cls: "lpa-roll-kind", text: annotationKindLabel(h) });
+    const set = this.store?.setMeta(h.setId);
+    if (set) {
+      const chip = head.createSpan({ cls: "lpa-set-chip", text: set.name });
+      chip.style.setProperty("--lpa-set-accent", set.accent);
+    }
     if (h.isPinned) head.createSpan({ cls: "lpa-roll-pin", text: "pinned" });
 
     item.createDiv({ cls: "lpa-roll-note", text: rollPrimaryText(h) });
@@ -752,6 +854,11 @@ export class PdfAnnotatorView extends FileView {
     const head = card.createDiv({ cls: "lpa-margin-card-head" });
     head.createSpan({ cls: "lpa-margin-dot", attr: { "aria-hidden": "true" } });
     head.createSpan({ cls: "lpa-margin-page", text: `p.${h.page + 1}` });
+    const set = this.store?.setMeta(h.setId);
+    if (set) {
+      const chip = head.createSpan({ cls: "lpa-set-chip", text: set.name });
+      chip.style.setProperty("--lpa-set-accent", set.accent);
+    }
     const pin = head.createEl("button", {
       cls: "lpa-pin-btn",
       text: "⌖",
@@ -2480,7 +2587,13 @@ export class PdfAnnotatorView extends FileView {
     this.pageViews = [];
     this.visible.clear();
     this.pageSizes = [];
+    this.storeChangeCleanup?.();
+    this.storeChangeCleanup = null;
+    const releasedStore = this.store;
     this.store = null;
+    if (releasedStore) void releasedStore.release().catch((error) => console.error(`${LOG_TAG} failed to save annotations`, error));
+    if (this.jobsRootPath) this.aiJobs.pauseForRoot(this.jobsRootPath);
+    this.jobsRootPath = null;
     this.activeHighlightId = null;
     this.hoverHighlightId = null;
     this.lastVisibleKey = "";

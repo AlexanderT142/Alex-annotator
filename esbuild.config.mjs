@@ -7,10 +7,10 @@ import { builtinModules, createRequire } from "module";
 const require = createRequire(import.meta.url);
 const prod = process.argv[2] === "production";
 
-// --- Confirmed install target (Vault A: the currently-open parent vault) -----
+// Build portable release assets by default; local installs explicitly opt in.
 const PLUGIN_DIR =
   process.env.LOCAL_PDF_ANNOTATOR_PLUGIN_DIR ??
-  "/Users/tianchenhao/Library/Mobile Documents/iCloud~md~obsidian/Documents/.obsidian/plugins/local-pdf-annotator";
+  path.resolve("dist");
 const OUTFILE = path.join(PLUGIN_DIR, "main.js");
 fs.mkdirSync(PLUGIN_DIR, { recursive: true });
 

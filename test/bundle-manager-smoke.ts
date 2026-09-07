@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { AnnotationStore, serializeAnnotations, type AnnotationDoc } from "../src/annotations";
+import { AnnotationStore, parseAnnotations, serializeAnnotations, type AnnotationDoc } from "../src/annotations";
+import { AnnotationSetWorkspace } from "../src/annotation-sets";
 import { PdfBundleManager } from "../src/bundles";
 import { TFile, normalizePath } from "./obsidian-stub";
 
@@ -185,6 +186,50 @@ async function main(): Promise<void> {
     new Uint8Array(await vault.adapter.readBinary(restored.path)),
     new Uint8Array(originalBytes)
   );
+
+  const legacySnapshot = await manager.exportAnnotations(restored as any, "Exports");
+  assert.equal(parseAnnotations(await vault.adapter.read(legacySnapshot))?.highlights.length, 1,
+    "export migrates a legacy-only bundle without losing its annotations");
+  const setOptions = {
+    adapter: vault.adapter as any,
+    setsRootPath: first.annotationSetsRootPath,
+    indexPath: first.annotationSetsIndexPath,
+    legacyAnnotationPath: first.annotationPath,
+    pdfBasename: restored.basename,
+    pdfVaultPath: restored.path,
+  };
+  const workspace = await AnnotationSetWorkspace.open(setOptions);
+  const second = await workspace.createSet("Study partner", "ai");
+  workspace.add({ ...legacyDoc.highlights[0], id: "study01", text: "parallel quote", note: "AI commentary", source: "ai" });
+  const archived = await workspace.createSet("Old draft");
+  workspace.add({ ...legacyDoc.highlights[0], id: "archived01", text: "Archived quote" });
+  await workspace.archiveSet(archived.id);
+  await workspace.setVisible(second.id, false);
+  const activeBefore = workspace.activeSet().id;
+  workspace.update("legacy01", { note: "Just edited before autosave" });
+  const legacyBefore = await vault.adapter.read(first.annotationPath);
+  const exportPath = await manager.exportAnnotations(restored as any, "Exports");
+  const exported = await vault.adapter.read(exportPath);
+  assert.equal(exportPath, legacySnapshot, "export retains the existing stable destination");
+  assert.ok(exported.includes("## My notes") && exported.includes("## Study partner"));
+  assert.ok(exported.includes("Just edited before autosave"), "export includes pending live edits");
+  assert.ok(exported.includes("parallel quote"), "hidden sets are still exported");
+  assert.ok(!exported.includes("Archived quote"), "archived sets are excluded");
+  const exportDoc = parseAnnotations(exported)!;
+  assert.equal(exportDoc.highlights.length, 2);
+  assert.deepEqual((exportDoc as any).annotationSets, [{ id: "default", name: "My notes" }, { id: second.id, name: "Study partner" }]);
+  assert.equal(workspace.activeSet().id, activeBefore);
+  assert.equal(workspace.isVisible(second.id), false, "export does not alter visibility");
+  assert.equal(await vault.adapter.read(first.annotationPath), legacyBefore, "legacy recovery snapshot is untouched");
+  await workspace.release();
+  vault.adapter.text.delete(first.annotationPath);
+  await manager.exportAnnotations(restored as any, "Exports");
+  assert.equal(parseAnnotations(await vault.adapter.read(exportPath))?.highlights.length, 2,
+    "closed multi-set PDFs export without a legacy single-set file");
+
+  const missingFile = new TFile("unmanaged.pdf");
+  await vault.adapter.writeBinary(missingFile.path, new TextEncoder().encode("unmanaged").buffer);
+  await assert.rejects(manager.exportAnnotations(missingFile as any, "Exports"), /No managed annotations/);
 
   const replacementFile = new TFile("Downloads/paper.pdf") as any;
   await vault.adapter.writeBinary(replacementFile.path, replacementBytes);

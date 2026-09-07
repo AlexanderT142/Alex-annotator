@@ -20,6 +20,7 @@ import {
   type AnnotationPathOptions,
 } from "./annotations";
 import { PDF_BUNDLE_LIBRARY, pathsForHash, sha256Hex } from "./bundle-identity";
+import { AnnotationSetWorkspace } from "./annotation-sets";
 
 export { PDF_BUNDLE_LIBRARY, sha256Hex } from "./bundle-identity";
 
@@ -47,6 +48,9 @@ export interface PdfBundleBinding {
   backupPath: string;
   annotationPath: string;
   annotationBackupPath: string;
+  annotationSetsRootPath: string;
+  annotationSetsIndexPath: string;
+  aiJobsRootPath: string;
   manifestPath: string;
   fallbackAnnotationPaths: string[];
   manifest: PdfBundleManifest;
@@ -198,18 +202,36 @@ export class PdfBundleManager {
     const data = await this.app.vault.readBinary(file);
     const hash = await sha256Hex(data);
     const binding = await this.readBinding(hash);
-    if (!binding || !(await this.app.vault.adapter.exists(binding.annotationPath))) {
+    const adapter = this.app.vault.adapter;
+    if (!binding || !(await adapter.exists(binding.annotationPath) || await adapter.exists(binding.annotationSetsRootPath))) {
       throw new Error("No managed annotations exist for this PDF.");
+    }
+    // Reuse the live workspace so a just-written note is not lost to autosave debounce.
+    // Opening a closed PDF also uses the normal legacy migration/recovery path.
+    const workspace = await AnnotationSetWorkspace.open({
+      adapter,
+      setsRootPath: binding.annotationSetsRootPath,
+      indexPath: binding.annotationSetsIndexPath,
+      legacyAnnotationPath: binding.annotationPath,
+      legacyAnnotationBackupPath: binding.annotationBackupPath,
+      legacyFallbackPaths: binding.fallbackAnnotationPaths,
+      pdfBasename: file.basename,
+      pdfVaultPath: file.path,
+      fingerprint: binding.manifest.fingerprint,
+    });
+    let snapshot: string;
+    try {
+      workspace.setPdfPath(file.path, file.basename);
+      snapshot = workspace.exportMarkdown();
+    } finally {
+      await workspace.release();
     }
     const folder = normalizePath(exportFolder).replace(/^\/+|\/+$/g, "");
     await this.ensureFolder(folder);
     const exportPath = normalizePath(
       `${folder}/${file.basename}--${hash.slice(0, 12)}.annotations.md`
     );
-    await this.app.vault.adapter.write(
-      exportPath,
-      await this.app.vault.adapter.read(binding.annotationPath)
-    );
+    await adapter.write(exportPath, snapshot);
     return exportPath;
   }
 

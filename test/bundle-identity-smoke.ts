@@ -18,6 +18,8 @@ async function main(): Promise<void> {
   assert.ok(paths.backupPath.endsWith(`/${firstHash}/document.pdf`));
   assert.ok(paths.annotationPath.endsWith(`/${firstHash}/annotations.md`));
   assert.ok(paths.annotationBackupPath.endsWith(`/${firstHash}/annotations.previous.md`));
+  assert.ok(paths.annotationSetsIndexPath.endsWith(`/${firstHash}/annotation-sets/index.json`));
+  assert.ok(paths.aiJobsRootPath.endsWith(`/${firstHash}/ai-jobs`));
   assert.ok(!paths.rootPath.includes("Downloads"), "bundle identity must not contain the visible path");
   assert.throws(() => pathsForHash("not-a-hash"));
 

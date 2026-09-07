@@ -8,6 +8,9 @@ export interface PdfBundlePaths {
   backupPath: string;
   annotationPath: string;
   annotationBackupPath: string;
+  annotationSetsRootPath: string;
+  annotationSetsIndexPath: string;
+  aiJobsRootPath: string;
   manifestPath: string;
 }
 
@@ -25,6 +28,9 @@ export function pathsForHash(hash: string): PdfBundlePaths {
     backupPath: `${rootPath}/document.pdf`,
     annotationPath: `${rootPath}/annotations.md`,
     annotationBackupPath: `${rootPath}/annotations.previous.md`,
+    annotationSetsRootPath: `${rootPath}/annotation-sets`,
+    annotationSetsIndexPath: `${rootPath}/annotation-sets/index.json`,
+    aiJobsRootPath: `${rootPath}/ai-jobs`,
     manifestPath: `${rootPath}/manifest.json`,
   };
 }

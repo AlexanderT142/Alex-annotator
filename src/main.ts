@@ -20,6 +20,7 @@ import {
 import { PdfAnnotatorView, VIEW_TYPE_PDF_ANNOTATOR } from "./view";
 import { initPdfEngine, disposePdfEngine, LOG_TAG } from "./pdf-engine";
 import { NativeOverlayManager } from "./native-overlay";
+import { AnchoredPanel } from "./anchored-panel";
 import {
   DEFAULT_ANNOTATION_FOLDER,
   normalizeAnnotationStorageFolder,
@@ -32,6 +33,19 @@ import {
   PdfBundleManager,
   type PdfBundleBinding,
 } from "./bundles";
+import {
+  AI_PROVIDER_PRESETS,
+  DEFAULT_AI_SETTINGS,
+  detectProviderFromKey,
+  listAiModels,
+  normalizeAiSettings,
+  presetFor,
+  requestAiAnnotations,
+  type AiConnectionSettings,
+  type AiProviderId,
+} from "./ai-provider";
+import { AiJobService } from "./ai-jobs";
+import { AiCredentialStore } from "./ai-credentials";
 
 interface LpaSettings {
   /** Override Obsidian's core PDF viewer so clicking a PDF opens this view. */
@@ -42,6 +56,8 @@ interface LpaSettings {
   annotationStorageMode: AnnotationStorageMode;
   /** Vault-relative folder searched for legacy sidecars and used for exports. */
   annotationStorageFolder: string;
+  /** Device-local AI connection. The key is never stored in the vault bundle. */
+  ai: AiConnectionSettings;
 }
 
 const DEFAULT_SETTINGS: LpaSettings = {
@@ -49,6 +65,7 @@ const DEFAULT_SETTINGS: LpaSettings = {
   enableNativeOverlay: true,
   annotationStorageMode: "folder",
   annotationStorageFolder: DEFAULT_ANNOTATION_FOLDER,
+  ai: DEFAULT_AI_SETTINGS,
 };
 
 function coerceAnnotationStorageMode(value: string): AnnotationStorageMode {
@@ -59,6 +76,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
   settings!: LpaSettings;
   nativeOverlays!: NativeOverlayManager;
   bundleManager!: PdfBundleManager;
+  aiJobs = new AiJobService();
+  private credentials(): AiCredentialStore { return new AiCredentialStore(window.localStorage); }
   private replacingCorePdfView = false;
   private nativePdfRefreshRaf: number | null = null;
 
@@ -76,14 +95,24 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     this.registerView(
       VIEW_TYPE_PDF_ANNOTATOR,
       (leaf: WorkspaceLeaf) =>
-        new PdfAnnotatorView(leaf, () => this.annotationPathOptions(), this.bundleManager)
+        new PdfAnnotatorView(
+          leaf,
+          () => this.annotationPathOptions(),
+          this.bundleManager,
+          () => this.settings.ai,
+          this.aiJobs,
+          (patch) => this.configureAiConnection(patch)
+        )
     );
 
     this.nativeOverlays = new NativeOverlayManager(
       this,
       () => this.settings.enableNativeOverlay,
       () => this.annotationPathOptions(),
-      this.bundleManager
+      this.bundleManager,
+      () => this.settings.ai,
+      this.aiJobs,
+      (patch) => this.configureAiConnection(patch)
     );
 
     // Trigger 1: command palette.
@@ -237,6 +266,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
   }
 
   onunload(): void {
+    AnchoredPanel.closeAll();
     if (this.nativePdfRefreshRaf !== null) {
       window.cancelAnimationFrame(this.nativePdfRefreshRaf);
       this.nativePdfRefreshRaf = null;
@@ -319,17 +349,64 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const saved = (await this.loadData()) ?? {};
+    const legacyApiKey = typeof saved?.ai?.apiKey === "string" ? saved.ai.apiKey.trim() : "";
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
     this.settings.annotationStorageMode = coerceAnnotationStorageMode(
       this.settings.annotationStorageMode
     );
     this.settings.annotationStorageFolder = normalizeAnnotationStorageFolder(
       this.settings.annotationStorageFolder
     );
+    this.settings.ai = normalizeAiSettings(this.settings.ai);
+    try {
+      this.settings.ai.apiKey = this.credentials().migrate(this.settings.ai, legacyApiKey);
+      if (legacyApiKey) await this.saveSettings();
+    } catch {
+      this.settings.ai.apiKey = legacyApiKey;
+      new Notice("PDF Annotator: device-local key storage is unavailable. Key migration was not completed; the existing copy was preserved.");
+    }
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    const persisted: any = {
+      ...this.settings,
+      ai: { ...this.settings.ai },
+    };
+    delete persisted.ai.apiKey;
+    await this.saveData(persisted);
+  }
+
+  async setAiApiKey(value: string): Promise<void> {
+    const key = value.trim();
+    this.settings.ai.apiKey = key;
+    try { this.credentials().write(this.settings.ai, key); }
+    catch { new Notice("The key works for this session, but could not be saved on this device."); }
+    await this.saveSettings();
+  }
+
+  private readDeviceApiKey(): string {
+    try {
+      return this.credentials().read(this.settings.ai);
+    } catch {
+      return "";
+    }
+  }
+
+  async selectAiConnection(provider: AiProviderId, baseUrl?: string): Promise<void> {
+    const preset = presetFor(provider);
+    this.settings.ai = { ...preset, provider, baseUrl: baseUrl ?? preset.baseUrl, model: preset.defaultModel, apiKey: "" };
+    this.settings.ai.apiKey = this.readDeviceApiKey();
+    await this.saveSettings();
+  }
+
+  async configureAiConnection(patch: Partial<AiConnectionSettings>): Promise<void> {
+    if (patch.provider !== undefined || patch.baseUrl !== undefined) {
+      await this.selectAiConnection(patch.provider ?? this.settings.ai.provider, patch.baseUrl);
+    }
+    if (patch.model !== undefined) this.settings.ai.model = patch.model.trim();
+    if (patch.apiKey !== undefined) await this.setAiApiKey(patch.apiKey);
+    else await this.saveSettings();
   }
 
   annotationPathOptions(): AnnotationPathOptions {
@@ -380,6 +457,110 @@ class LpaSettingTab extends PluginSettingTab {
         })
       );
 
+    containerEl.createEl("h2", { text: "AI annotation" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Paste a provider key, choose its provider when the key prefix is ambiguous, and choose a model. PDF Annotator owns the request format and endpoint. Keys stay in Obsidian's device-local app storage outside the vault, but that storage is not encrypted.",
+    });
+
+    new Setting(containerEl)
+      .setName("AI provider")
+      .setDesc("The plugin maintains the protocol and endpoint for this provider.")
+      .addDropdown((dropdown) => {
+        for (const preset of AI_PROVIDER_PRESETS) dropdown.addOption(preset.id, preset.name);
+        dropdown.setValue(this.plugin.settings.ai.provider).onChange(async (value) => {
+          await this.plugin.selectAiConnection(value as AiProviderId);
+          this.display();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("API key")
+      .setDesc("Saved in Obsidian's device-local app storage, outside the vault. It is never written to plugin data, a PDF bundle, annotation, job checkpoint, or log.")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.inputEl.autocomplete = "off";
+        text.setPlaceholder("Paste provider key").setValue(this.plugin.settings.ai.apiKey).onChange(async (value) => {
+          // An explicitly chosen compatible endpoint must never be replaced
+          // just because its key resembles a first-party provider's key.
+          const detected = this.plugin.settings.ai.provider === "custom" ? null : detectProviderFromKey(value);
+          const providerChanged = !!detected && detected !== this.plugin.settings.ai.provider;
+          if (detected && detected !== this.plugin.settings.ai.provider) {
+            const preset = presetFor(detected);
+            this.plugin.settings.ai.provider = detected;
+            this.plugin.settings.ai.protocol = preset.protocol;
+            this.plugin.settings.ai.baseUrl = preset.baseUrl;
+            this.plugin.settings.ai.model = preset.defaultModel;
+          }
+          await this.plugin.setAiApiKey(value);
+          if (providerChanged) this.display();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Model")
+      .setDesc("Choose from up to four recent text models, or enter a model ID. Refreshing the list discovers new releases without a plugin update.")
+      .addText((text) =>
+        text.setPlaceholder("model-id").setValue(this.plugin.settings.ai.model).onChange(async (value) => {
+          this.plugin.settings.ai.model = value.trim();
+          await this.plugin.saveSettings();
+        })
+      )
+      .addButton((button) =>
+        button.setButtonText("Choose current model").onClick(async () => {
+          button.setDisabled(true).setButtonText("Loading…");
+          try {
+            const models = await listAiModels(this.plugin.settings.ai);
+            if (!models.length) {
+              new Notice("The provider did not return any selectable models.");
+            } else {
+              new AiModelModal(this.plugin, models, () => this.display()).open();
+            }
+          } catch (error: any) {
+            new Notice(`Could not load models — ${error?.message ?? error}`);
+          } finally {
+            button.setDisabled(false).setButtonText("Choose current model");
+          }
+        })
+      );
+
+    if (this.plugin.settings.ai.provider === "custom") {
+      new Setting(containerEl)
+        .setName("Custom base URL")
+        .setDesc("Advanced: only needed for a custom OpenAI-compatible service.")
+        .addText((text) =>
+          text.setValue(this.plugin.settings.ai.baseUrl).onChange(async (value) => {
+            const model = this.plugin.settings.ai.model;
+            await this.plugin.selectAiConnection("custom", value.trim().replace(/\/+$/, ""));
+            this.plugin.settings.ai.model = model;
+            await this.plugin.saveSettings();
+          })
+        );
+    }
+
+    new Setting(containerEl)
+      .setName("Connection check")
+      .setDesc("Makes one small real request to the selected provider and validates structured annotation JSON.")
+      .addButton((button) =>
+        button.setButtonText("Test key and model").onClick(async () => {
+          button.setDisabled(true).setButtonText("Testing…");
+          try {
+            await requestAiAnnotations(
+              this.plugin.settings.ai,
+              "Create one short explanatory annotation for the test sentence.",
+              [{ pageNumber: 1, text: "This is a connection test sentence." }]
+            );
+            new Notice("PDF Annotator: AI key, endpoint, model, and JSON response are working.");
+          } catch (error: any) {
+            console.error(`${LOG_TAG} AI connection check failed (key redacted)`, error?.message ?? error);
+            new Notice(`PDF Annotator: AI connection failed — ${error?.message ?? error}`);
+          } finally {
+            button.setDisabled(false).setButtonText("Test key and model");
+          }
+        })
+      );
+
     new Setting(containerEl)
       .setName("Make this the default PDF viewer")
       .setDesc(
@@ -398,6 +579,29 @@ class LpaSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
       text:
         "The command “Open current PDF in annotator” remains available as a stable custom-view fallback.",
+    });
+  }
+}
+
+class AiModelModal extends FuzzySuggestModal<string> {
+  constructor(private plugin: LocalPdfAnnotatorPlugin, private models: string[], private changed: () => void) {
+    super(plugin.app);
+    this.setPlaceholder("Choose from up to four recent models");
+  }
+
+  getItems(): string[] {
+    return this.models;
+  }
+
+  getItemText(model: string): string {
+    return model;
+  }
+
+  onChooseItem(model: string): void {
+    this.plugin.settings.ai.model = model;
+    void this.plugin.saveSettings().then(() => {
+      this.changed();
+      new Notice(`PDF Annotator: using ${model}`);
     });
   }
 }

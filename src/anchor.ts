@@ -101,6 +101,53 @@ export async function buildDocIndex(
   return { pages, search, map };
 }
 
+/** Build only an inclusive 0-based page range while retaining real page IDs. */
+export async function buildDocIndexRange(
+  pdfDoc: any,
+  fromPage: number,
+  toPage: number,
+  onProgress?: (done: number, total: number) => void
+): Promise<DocIndex> {
+  const totalPages: number = pdfDoc.numPages;
+  const from = Math.max(0, Math.min(totalPages - 1, Math.floor(fromPage)));
+  const to = Math.max(from, Math.min(totalPages - 1, Math.floor(toPage)));
+  const pages: PageData[] = Array.from({ length: totalPages }, (_, page) => ({ page, items: [] }));
+  let search = "";
+  const map: GPos[] = [];
+  const total = to - from + 1;
+  for (let p = from; p <= to; p++) {
+    const page = await pdfDoc.getPage(p + 1);
+    const tc = await page.getTextContent();
+    const items: ItemBox[] = [];
+    for (const it of tc.items) {
+      if (typeof it.str !== "string") continue;
+      const t = it.transform as number[];
+      const itemIndex = items.length;
+      items.push({ str: it.str, x: t[4], y: t[5], w: it.width, h: it.height });
+      let ch = 0;
+      for (const c of it.str) {
+        const n = normChar(c);
+        for (let k = 0; k < n.length; k++) {
+          search += n[k];
+          map.push({ page: p, item: itemIndex, ch });
+        }
+        ch += c.length;
+      }
+    }
+    pages[p] = { page: p, items };
+    onProgress?.(p - from + 1, total);
+  }
+  return { pages, search, map };
+}
+
+export function plainTextForPage(doc: DocIndex, page: number): string {
+  return (doc.pages[page]?.items ?? [])
+    .map((item) => item.str)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function itemHRange(b: ItemBox, fromCh: number, toChInclusive: number): [number, number] {
   const len = b.str.length || 1;
   const f = Math.max(0, Math.min(1, fromCh / len));
@@ -239,4 +286,47 @@ export function anchorQuote(
   if (fb) return resultsFromSpan(doc, fb.start, fb.end);
 
   return [];
+}
+
+/** AI quotes must match the supplied page text in full. Only whitespace is
+ * normalized; the fuzzy legacy-import matcher must never validate AI output. */
+export function anchorQuoteOnPage(
+  doc: DocIndex,
+  page: number,
+  exact: string,
+  prefix?: string,
+  suffix?: string
+): AnchorResult[] {
+  const items = doc.pages[page]?.items ?? [];
+  const local: DocIndex = { pages: doc.pages, search: "", map: [] };
+  const append = (character: string, position: GPos) => {
+    const c = /\s/.test(character) ? " " : character;
+    if (c === " " && (!local.search || local.search.endsWith(" "))) return;
+    local.search += c;
+    local.map.push(position);
+  };
+  items.forEach((item, itemIndex) => {
+    if (itemIndex > 0) append(" ", { page, item: itemIndex, ch: 0 });
+    for (let ch = 0; ch < item.str.length; ch++) {
+      append(item.str[ch], { page, item: itemIndex, ch });
+    }
+  });
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+  const needle = normalize(exact);
+  if (needle.length < 2) return [];
+  const matches: Array<{ start: number; end: number; score: number }> = [];
+  for (let from = 0; from < local.search.length;) {
+    const at = local.search.indexOf(needle, from);
+    if (at < 0) break;
+    const end = at + needle.length - 1;
+    const before = local.search.slice(0, at).trimEnd();
+    const after = local.search.slice(end + 1).trimStart();
+    const score = Number(!!prefix && before.endsWith(normalize(prefix))) +
+      Number(!!suffix && after.startsWith(normalize(suffix)));
+    matches.push({ start: at, end, score });
+    from = at + 1;
+  }
+  matches.sort((a, b) => b.score - a.score);
+  if (!matches.length || (matches.length > 1 && matches[0].score === matches[1].score)) return [];
+  return resultsFromSpan(local, matches[0].start, matches[0].end);
 }

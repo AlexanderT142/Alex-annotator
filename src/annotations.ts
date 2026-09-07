@@ -78,7 +78,16 @@ export interface Highlight {
   /** Quote context, kept for robustness / future re-anchoring. */
   context?: { prefix?: string; suffix?: string };
   created: string; // ISO timestamp
-  source?: "manual" | "import";
+  source?: "manual" | "import" | "ai";
+  /** Owning annotation set. Added by the multi-set workspace on load/write. */
+  setId?: string;
+  /** Local provenance for an AI-created annotation. Never contains a key. */
+  ai?: {
+    jobId: string;
+    provider: string;
+    model: string;
+    generatedAt: string;
+  };
 }
 
 export interface AnnotationDoc {
@@ -207,10 +216,44 @@ export function sidecarPathFor(
   return legacySidecarPathFor(pdfVaultPath);
 }
 
-export function serializeAnnotations(doc: AnnotationDoc, pdfBasename: string): string {
-  const ordered = [...doc.highlights].sort(
-    (a, b) => a.page - b.page || a.created.localeCompare(b.created)
-  );
+/** Treat PDF/provider/user text as text, not executable HTML or Markdown. */
+function readableText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().replace(/[&<>"'`*_[\]\\^#]/g,
+    (character) => `&#${character.charCodeAt(0)};`);
+}
+
+function safeHighlightColor(color: string): string | null {
+  if (/^#(?:[a-f\d]{3}|[a-f\d]{4}|[a-f\d]{6}|[a-f\d]{8})$/i.test(color)) return color;
+  const rgb = color.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(0(?:\.\d+)?|1(?:\.0+)?|\.\d+))?\s*\)$/i);
+  if (rgb && rgb.slice(1, 4).every((component) => Number(component) <= 255)) return color;
+  return null;
+}
+
+function readableHighlights(highlights: Highlight[]): string[] {
+  if (!highlights.length) return ["_No highlights yet._", ""];
+  const lines: string[] = [];
+  const ordered = [...highlights].sort((a, b) => a.page - b.page || a.created.localeCompare(b.created));
+  for (const h of ordered) {
+    const isTag = h.type === "tag";
+    const text = readableText(isTag ? (h.note || h.text || "Page note") : (h.text || "Page note"));
+    const style = markStyleOf(h);
+    const styleTag = isTag ? " _(tag)_" : style === "highlight" ? "" : ` _(${MARK_STYLE_LABELS[style].toLowerCase()})_`;
+    const color = safeHighlightColor(h.color);
+    // Only text highlights get a background; notes and other mark styles stay distinct.
+    const quote = !isTag && style === "highlight" && color
+      ? `<mark style="background-color: ${color};">${text}</mark>` : text;
+    const blockId = /^[a-zA-Z0-9-]+$/.test(h.id) ? ` ^${h.id}` : "";
+    lines.push(`- **p.${h.page + 1}** ${colorEmoji(h.tagColor ?? h.color)}${styleTag} — ${quote}${blockId}`);
+    if (!isTag && h.note?.trim()) lines.push(`  - 📝 ${readableText(h.note)}`);
+    if (h.noteContentCJK?.trim()) lines.push(`  - ${readableText(h.noteContentCJK)}`);
+    lines.push("");
+  }
+  return lines;
+}
+
+export interface AnnotationExportSet { id: string; name: string }
+
+export function serializeAnnotations(doc: AnnotationDoc, pdfBasename: string, sets?: AnnotationExportSet[]): string {
   const lines: string[] = [];
   lines.push("---");
   lines.push("lpa-annotations: 1");
@@ -225,28 +268,15 @@ export function serializeAnnotations(doc: AnnotationDoc, pdfBasename: string): s
       "keep the json block intact. -->"
   );
   lines.push("");
-  if (ordered.length === 0) {
-    lines.push("_No highlights yet._");
-  } else {
-    for (const h of ordered) {
-      const isTag = h.type === "tag";
-      const text = (h.note || h.text || "Page note").replace(/\s+/g, " ").trim();
-      const short = text.length > 220 ? text.slice(0, 217) + "…" : text;
-      const st = markStyleOf(h);
-      const styleTag = isTag
-        ? " _(tag)_"
-        : st === "highlight"
-          ? ""
-          : ` _(${MARK_STYLE_LABELS[st].toLowerCase()})_`;
-      let line = `- **p.${h.page + 1}** ${colorEmoji(h.tagColor ?? h.color)}${styleTag} ^${h.id} — "${short}"`;
-      if (!isTag && h.note && h.note.trim()) line += `\n  - 📝 ${h.note.replace(/\s+/g, " ").trim()}`;
-      if (h.noteContentCJK && h.noteContentCJK.trim()) line += `\n  - ${h.noteContentCJK.replace(/\s+/g, " ").trim()}`;
-      lines.push(line);
+  if (sets) {
+    lines.push("All non-archived annotation sets, including sets hidden while reading.", "");
+    for (const set of sets) {
+      lines.push(`## ${readableText(set.name)}`, "", ...readableHighlights(doc.highlights.filter((h) => h.setId === set.id)));
     }
-  }
+  } else lines.push(...readableHighlights(doc.highlights));
   lines.push("");
   lines.push("```json");
-  lines.push(JSON.stringify(doc, null, 2));
+  lines.push(JSON.stringify(sets ? { ...doc, annotationSets: sets } : doc, null, 2));
   lines.push("```");
   lines.push("");
   return lines.join("\n");
@@ -274,6 +304,8 @@ export function parseAnnotations(content: string): AnnotationDoc | null {
 export class AnnotationStore {
   doc: AnnotationDoc;
   private dirty = false;
+  private revision = 0;
+  private writes: Promise<void> = Promise.resolve();
   private flushDebounced: () => void;
 
   constructor(
@@ -287,7 +319,7 @@ export class AnnotationStore {
     private sidecarBackupPath?: string
   ) {
     this.doc = { version: 1, pdf: pdfVaultPath, fingerprint, highlights: [] };
-    this.flushDebounced = debounce(() => void this.flush(), 600, true);
+    this.flushDebounced = debounce(() => void this.flush().catch((error) => console.error("PDF Annotator: could not save annotations", error)), 600, true);
   }
 
   async load(): Promise<void> {
@@ -364,10 +396,25 @@ export class AnnotationStore {
 
   private markDirty(): void {
     this.dirty = true;
+    this.revision++;
     this.flushDebounced();
   }
 
   async flush(): Promise<void> {
+    const write = this.writes.catch(() => {}).then(() => this.flushPending());
+    this.writes = write;
+    await write;
+  }
+
+  private async flushPending(): Promise<void> {
+    while (this.dirty) {
+      const revision = this.revision;
+      await this.writeSnapshot();
+      this.dirty = revision !== this.revision;
+    }
+  }
+
+  private async writeSnapshot(): Promise<void> {
     if (!this.dirty) return;
     const out = serializeAnnotations(this.doc, this.pdfBasename);
     try {
@@ -382,7 +429,6 @@ export class AnnotationStore {
         }
       }
       await this.adapter.write(this.sidecarPath, out);
-      this.dirty = false;
     } catch (error) {
       // Keep the in-memory document retryable after transient adapter/iCloud
       // failures instead of falsely treating an unsuccessful write as saved.
