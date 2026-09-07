@@ -1,7 +1,7 @@
 {
   "id": "local-pdf-annotator",
   "name": "PDF Annotator",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "minAppVersion": "1.4.0",
   "description": "Read and annotate PDFs with path-independent Markdown annotations and verified vault-local recovery bundles.",
   "author": "Alexander Tian",

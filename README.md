@@ -6,71 +6,9 @@ words — all inside Obsidian.
 Open any PDF and click **Annotate**. You can highlight a sentence, write a note,
 and carry on reading without changing apps or opening a second document.
 
-Each PDF can have several independent annotation sets. Choose which sets are
-visible together and which one receives new notes, or ask a configured AI
-provider to add notes to a set you choose, over a specific page range and prompt.
-
 ![A PDF page with several short and long notes on both sides](docs/screenshots/annotation-cards-overview-light-retina.png)
 
 *Your notes stay close to the words they belong to.*
-
-## Keep different kinds of notes separate
-
-Think of annotation sets as separate notebooks laid over the same PDF. Keep
-your own thoughts in **My notes**, translations in another set, and explanations
-in a **Reading partner** set. Show them together, or hide the ones you do not
-need right now. Nothing is erased when you hide a set.
-
-Click the set name at the top right to open the dropdown:
-
-- A **purple eye** means that set is visible. Click it to hide the set; click a
-  grey eye to show it again.
-- **Write here** chooses where your next manual notes will go. That set then
-  says **Active**. Other sets can still be visible at the same time.
-- **New set** gives you another space for a different purpose.
-
-![Annotation-set dropdown showing personal notes, translations, and a reading partner with independent visibility](docs/screenshots/annotation-sets-dropdown.png)
-
-*Choose what you see independently from where you write.*
-
-## Invite AI to read alongside you
-
-You can do your own thinking and still ask for a little help. For example, keep
-your notes untouched while AI adds a translation or explains an unfamiliar
-idea in a separate set.
-
-1. Create a set in the set dropdown, such as **Translation** or **Reading partner**.
-2. Click **AI** at the top right and choose that existing set.
-3. Choose your provider, paste its API key, and choose a model.
-4. Pick a few pages and describe the help you want. For example: “Translate key
-   passages into Chinese” or “Explain unfamiliar ideas and useful connections.”
-5. Start the job and keep reading. Progress appears on the toolbar, and closing
-   the dropdown does not stop the work.
-
-![AI annotation dropdown with an existing destination set, provider, hidden API-key field, model, page range, and reading-partner prompt](docs/screenshots/ai-annotation-dropdown.png)
-
-*Tell AI what kind of help you want and where its notes should go.*
-
-AI adds notes to the set you choose; it does not replace your existing notes or
-change where your manual notes are saved. Page numbers are positions in the PDF,
-including any cover or introduction. Start with two pages to see whether the
-result suits you. AI explanations can be wrong, so treat them as suggestions.
-
-The model picker stays short: up to four recent text models from your provider.
-You can refresh the choices or enter a model ID yourself when a new one appears.
-There is no request format or code to configure.
-
-AI is optional and uses your own provider account, which may charge for requests.
-Only text from your chosen pages and your prompt are sent—not the whole PDF or
-your existing annotations. The API key stays outside your vault on this device;
-that storage is not encrypted. See [Privacy](#privacy) for the details.
-
-## Take your quotes and notes with you
-
-Run **Export annotations for current PDF** from Obsidian's command palette.
-The exported Markdown keeps the full highlighted passage, its colour, and your
-note underneath it. Each non-archived set gets its own heading—even sets you
-have hidden while reading. No extra export options to configure.
 
 ## See every note beside the page
 
@@ -138,6 +76,64 @@ let PDF Annotator choose a side, or delete it.
 4. Write your thought.
 5. Keep reading; your note stays beside the page.
 6. Use the list when you want to find it again.
+
+## Take your quotes and notes with you
+
+Run **Export annotations for current PDF** from Obsidian's command palette.
+The exported Markdown keeps the full highlighted passage, its colour, and your
+note underneath it. Each non-archived set gets its own heading—even sets you
+have hidden while reading. No extra export options to configure.
+
+## Keep different kinds of notes separate
+
+Think of annotation sets as separate notebooks laid over the same PDF. Keep
+your own thoughts in **My notes**, translations in another set, and explanations
+in a **Reading partner** set. Show them together, or hide the ones you do not
+need right now. Nothing is erased when you hide a set.
+
+Click the set name at the top right to open the dropdown:
+
+- A **purple eye** means that set is visible. Click it to hide the set; click a
+  grey eye to show it again.
+- **Write here** chooses where your next manual notes will go. That set then
+  says **Active**. Other sets can still be visible at the same time.
+- **New set** gives you another space for a different purpose.
+
+![Annotation-set dropdown showing personal notes, translations, and a reading partner with independent visibility](docs/screenshots/annotation-sets-dropdown-retina.png)
+
+*Choose what you see independently from where you write.*
+
+## Invite AI to read alongside you
+
+You can do your own thinking and still ask for a little help. For example, keep
+your notes untouched while AI adds a translation or explains an unfamiliar
+idea in a separate set.
+
+1. Create a set in the set dropdown, such as **Translation** or **Reading partner**.
+2. Click **AI** at the top right and choose that existing set.
+3. Choose your provider, paste its API key, and choose a model.
+4. Pick a few pages and describe the help you want. For example: “Translate key
+   passages into Chinese” or “Explain unfamiliar ideas and useful connections.”
+5. Start the job and keep reading. Progress appears on the toolbar, and closing
+   the dropdown does not stop the work.
+
+![AI annotation dropdown with an existing destination set, provider, hidden API-key field, model, page range, and reading-partner prompt](docs/screenshots/ai-annotation-dropdown-retina.png)
+
+*Tell AI what kind of help you want and where its notes should go.*
+
+AI adds notes to the set you choose; it does not replace your existing notes or
+change where your manual notes are saved. Page numbers are positions in the PDF,
+including any cover or introduction. Start with two pages to see whether the
+result suits you. AI explanations can be wrong, so treat them as suggestions.
+
+The model picker stays short: up to four recent text models from your provider.
+You can refresh the choices or enter a model ID yourself when a new one appears.
+There is no request format or code to configure.
+
+AI is optional and uses your own provider account, which may charge for requests.
+Only text from your chosen pages and your prompt are sent—not the whole PDF or
+your existing annotations. The API key stays outside your vault on this device;
+that storage is not encrypted. See [Privacy](#privacy) for the details.
 
 ---
 
