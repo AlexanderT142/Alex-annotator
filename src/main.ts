@@ -457,7 +457,7 @@ class LpaSettingTab extends PluginSettingTab {
         })
       );
 
-    containerEl.createEl("h2", { text: "AI annotation" });
+    new Setting(containerEl).setName("AI annotation").setHeading();
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text:
