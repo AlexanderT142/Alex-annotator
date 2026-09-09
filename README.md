@@ -61,6 +61,13 @@ to its page and show its card.
 
 ## Put notes where you want them
 
+Page-note tags can be moved after you finish writing: drag the tag to another
+spot on its page. Drag its bottom-right corner to resize width and height
+independently into any rectangle. Larger tags show more of your note. Click to
+edit as usual, or press Escape during a move or resize to cancel. Position and
+size are saved when you release and stay proportional when you zoom or reopen
+the PDF. This works in both the native PDF viewer and the separate reader.
+
 Right-click any card to keep it open, move it to the left, move it to the right,
 let PDF Annotator choose a side, or delete it.
 

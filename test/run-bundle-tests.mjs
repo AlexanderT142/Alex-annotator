@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputDir = mkdtempSync(path.join(tmpdir(), "local-pdf-annotator-tests-"));
 const tests = [
+  { entry: "test/tag-gesture-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/annotation-export-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/anchored-panel-smoke.ts" },
   { entry: "test/model-shortlist-smoke.ts" },

@@ -1042,7 +1042,9 @@ button.lpa-set-visibility:focus-visible {
   transform: translate(-50%, -50%);
   opacity: 0.72;
   transition: opacity 250ms ease, border-color 250ms ease, background-color 250ms ease, box-shadow 250ms ease;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
+  box-sizing: border-box;
 }
 .lpa-page-tag:hover,
 .lpa-page-tag.is-hover,
@@ -1073,6 +1075,52 @@ button.lpa-set-visibility:focus-visible {
   line-height: 1.2;
   font-style: italic;
   color: var(--text-muted);
+}
+.lpa-page-tag.is-resized {
+  max-width: none;
+  align-items: flex-start;
+  overflow: hidden;
+  padding-right: 12px;
+}
+.lpa-page-tag.is-resized .lpa-tag-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 100%;
+}
+.lpa-page-tag.is-resized .lpa-tag-dot {
+  margin-top: 4px;
+}
+.lpa-page-tag.is-dragging {
+  cursor: grabbing;
+  opacity: 1;
+}
+.lpa-page-tag.is-resizing {
+  cursor: nwse-resize;
+  opacity: 1;
+}
+.lpa-tag-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.45;
+}
+.lpa-tag-resize-handle::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+}
+.lpa-page-tag:hover .lpa-tag-resize-handle,
+.lpa-page-tag.is-resizing .lpa-tag-resize-handle {
+  opacity: 1;
 }
 
 /* ===== Decorative (non-fill) mark styles ===================================

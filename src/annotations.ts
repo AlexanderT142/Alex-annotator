@@ -72,6 +72,8 @@ export interface Highlight {
   rects: PdfRect[]; // one rect per visual line
   tagX?: number; // percentage of page width, for page-note tags
   tagY?: number; // percentage of page height, for page-note tags
+  tagWidth?: number; // optional user-resized width, percentage of page width
+  tagHeight?: number; // optional user-resized height, percentage of page height
   tagColor?: string; // optional tag color; falls back to color
   isPinned?: boolean; // whether the margin card stays expanded / visible
   marginSide?: "left" | "right" | "auto"; // explicit override, otherwise source-based

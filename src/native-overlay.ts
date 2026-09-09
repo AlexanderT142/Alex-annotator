@@ -52,6 +52,7 @@ import { buildDocIndex, anchorQuote } from "./anchor";
 import { parseLegacyNote, targetBasename, type LegacyAnnotation } from "./legacy-import";
 import { PdfBundleManager } from "./bundles";
 import { copyPdfDataForWorker } from "./pdf-data";
+import { TagGestureController } from "./tag-gesture";
 import {
   fitFoldedMarginCardHeights,
   layoutPageBoundedCardTops,
@@ -327,6 +328,7 @@ export class NativeOverlayManager {
  * managed document bundle as the custom annotator view.
  */
 export class NativePdfOverlay {
+  private tagGesture = new TagGestureController();
   private destroyed = false;
   private store: AnnotationSetWorkspace | null = null;
   private storeChangeCleanup: (() => void) | null = null;
@@ -489,6 +491,7 @@ export class NativePdfOverlay {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.tagGesture.destroy();
 
     this.closeEditPopover();
     this.selectionPopoverEl?.remove();
@@ -817,6 +820,7 @@ export class NativePdfOverlay {
     geom: PageGeom
   ): void {
     layer.empty();
+    this.tagGesture.cancelIn(noteLayer);
     noteLayer.empty();
     const store = this.store;
     if (!store) return;
@@ -938,6 +942,9 @@ export class NativePdfOverlay {
     el.createSpan({ cls: "lpa-tag-dot", attr: { "aria-hidden": "true" } });
     el.createSpan({ cls: "lpa-tag-preview", text: tagPreview(tag) });
     this.bindMarkHover(el, tag.id);
+    this.tagGesture.bind(el, noteLayer, tag,
+      (geometry) => this.store?.update(tag.id, geometry),
+      () => this.scheduleRailLayout());
     el.addEventListener("click", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
@@ -1776,6 +1783,7 @@ export class NativePdfOverlay {
     geom: PageGeom,
     areaRect: DOMRect
   ): NativeAnchor | null {
+    h = { ...h, ...this.tagGesture.previewFor(h.id) };
     const explicit = h.marginSide === "left" || h.marginSide === "right" ? h.marginSide : null;
     const pageLeftX = box.left - areaRect.left;
     const pageRightX = box.right - areaRect.left;
@@ -2847,6 +2855,7 @@ function annotationColor(h: Highlight): string {
 
 function tagPreview(h: Highlight): string {
   const raw = (h.note || h.text || "Note").replace(/\bnote:\s*/gi, " ").replace(/\s+/g, " ").trim();
+  if (h.tagWidth && h.tagHeight) return raw || "Note";
   const words = raw.split(/\s+/).filter(Boolean).slice(0, 5).join(" ");
   return words || "Note";
 }

@@ -30,6 +30,7 @@ import { buildDocIndex, anchorQuote } from "./anchor";
 import { parseLegacyNote, targetBasename, type LegacyAnnotation } from "./legacy-import";
 import { PdfBundleManager } from "./bundles";
 import { copyPdfDataForWorker } from "./pdf-data";
+import { TagGestureController } from "./tag-gesture";
 import {
   fitFoldedMarginCardHeights,
   layoutPageBoundedCardTops,
@@ -129,6 +130,7 @@ interface MarginGeometry {
 }
 
 export class PdfAnnotatorView extends FileView {
+  private tagGesture = new TagGestureController();
   private rootEl!: HTMLElement;
   private toolbarEl!: HTMLElement;
   private titleEl!: HTMLElement;
@@ -1217,6 +1219,7 @@ export class PdfAnnotatorView extends FileView {
     pv.textLayerEl?.remove();
     pv.textLayerEl = null;
     pv.hlLayer.empty();
+    this.tagGesture.cancelIn(pv.noteLayer);
     pv.noteLayer.empty();
     pv.rendered = false;
     this.scheduleMarginLayout();
@@ -1371,6 +1374,7 @@ export class PdfAnnotatorView extends FileView {
   }
 
   private renderTags(pv: PageView): void {
+    this.tagGesture.cancelIn(pv.noteLayer);
     pv.noteLayer.empty();
     if (!this.store || !pv.page) return;
     const tags = this.store.byPage(pv.index).filter((h) => annotationTypeOf(h) === "tag");
@@ -1401,7 +1405,9 @@ export class PdfAnnotatorView extends FileView {
         this.activateHighlight(tag.id, { focusNote: true });
       });
       el.addEventListener("contextmenu", (evt) => this.openAnnotationContextMenu(evt, tag.id));
-      el.addEventListener("mousedown", (evt) => this.beginTagDrag(evt, tag.id, pv));
+      this.tagGesture.bind(el, pv.noteLayer, tag,
+        (geometry) => this.store?.update(tag.id, geometry),
+        () => this.scheduleMarginLayout());
     }
     this.scheduleMarginLayout();
   }
@@ -2048,37 +2054,8 @@ export class PdfAnnotatorView extends FileView {
     this.renderAnnotationSidebar();
   }
 
-  private beginTagDrag(evt: MouseEvent, id: string, pv: PageView): void {
-    if (!evt.altKey && !evt.metaKey) return;
-    const tag = this.store?.get(id);
-    if (!tag || annotationTypeOf(tag) !== "tag") return;
-    evt.preventDefault();
-    evt.stopPropagation();
-    const doc = this.pagesEl.ownerDocument;
-    const move = (e: MouseEvent) => {
-      const pageRect = pv.el.getBoundingClientRect();
-      const xPct = clamp(0, ((e.clientX - pageRect.left) / Math.max(1, pageRect.width)) * 100, 100);
-      const yPct = clamp(0, ((e.clientY - pageRect.top) / Math.max(1, pageRect.height)) * 100, 100);
-      const el = pv.noteLayer.querySelector<HTMLElement>(`.lpa-page-tag[data-hl-id="${cssEscape(id)}"]`);
-      if (el) {
-        el.setCssProps({ left: `${xPct}%`, top: `${yPct}%` });
-      }
-      this.scheduleMarginLayout();
-    };
-    const up = (e: MouseEvent) => {
-      doc.removeEventListener("mousemove", move, true);
-      doc.removeEventListener("mouseup", up, true);
-      const pageRect = pv.el.getBoundingClientRect();
-      const xPct = clamp(0, ((e.clientX - pageRect.left) / Math.max(1, pageRect.width)) * 100, 100);
-      const yPct = clamp(0, ((e.clientY - pageRect.top) / Math.max(1, pageRect.height)) * 100, 100);
-      this.store?.update(id, { tagX: xPct, tagY: yPct });
-      this.renderAnnotationSidebar();
-    };
-    doc.addEventListener("mousemove", move, true);
-    doc.addEventListener("mouseup", up, true);
-  }
-
   private computeAnnotationAnchor(h: Highlight): AnnotationAnchor | null {
+    h = { ...h, ...this.tagGesture.previewFor(h.id) };
     const pv = this.pageViews[h.page];
     if (!pv || !pv.page) return null;
     const pageRect = pv.el.getBoundingClientRect();
@@ -2563,6 +2540,7 @@ export class PdfAnnotatorView extends FileView {
   }
 
   private teardownDocument(): void {
+    this.tagGesture.destroy();
     this.closeMarkPopover();
     this.hideSelectionActions(false);
     this.setTagPlacementMode(false);
@@ -2823,6 +2801,7 @@ function annotationColor(h: Highlight): string {
 
 function tagPreview(h: Highlight): string {
   const raw = (h.note || h.text || "Note").replace(/\bnote:\s*/gi, " ").replace(/\s+/g, " ").trim();
+  if (h.tagWidth && h.tagHeight) return raw || "Note";
   const words = raw.split(/\s+/).filter(Boolean).slice(0, 5).join(" ");
   return words || "Note";
 }
