@@ -114,6 +114,7 @@ function displayUnits(text: string, weight = 1): number {
  * length; the card itself supplies the collapsed/expanded viewport rules. */
 export function syncMarginCardPresentation(card: HTMLElement): void {
   for (const textarea of card.querySelectorAll<HTMLTextAreaElement>("textarea")) {
+    if (textarea.hidden) continue;
     textarea.setCssProps({ height: "auto" });
     textarea.setCssProps({ height: `${Math.max(textarea.scrollHeight, 20)}px` });
   }

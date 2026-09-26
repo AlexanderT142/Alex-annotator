@@ -59,6 +59,7 @@ import {
   marginCardSourceText,
   syncMarginCardPresentation,
 } from "./margin-card";
+import { AnnotationMarkdownCards } from "./annotation-markdown";
 import { AnnotationSetWorkspace } from "./annotation-sets";
 import { AnnotationSetManagerModal } from "./annotation-set-ui";
 import { AiAnnotationModal } from "./ai-ui";
@@ -158,7 +159,8 @@ export class NativeOverlayManager {
       apiKey: "",
     }),
     private aiJobs: AiJobService = new AiJobService(),
-    private configureAiConnection?: ConfigureAiConnection
+    private configureAiConnection?: ConfigureAiConnection,
+    private getRenderAnnotationsAsMarkdown: () => boolean = () => false
   ) {}
 
   private get app(): App {
@@ -213,6 +215,10 @@ export class NativeOverlayManager {
     return leaf ? this.overlays.get(leaf) ?? null : null;
   }
 
+  refreshAnnotationPresentation(): void {
+    for (const overlay of this.overlays.values()) overlay.refreshAnnotationPresentation();
+  }
+
   activeOverlay(): NativePdfOverlay | null {
     return this.overlayFor(this.app.workspace.activeLeaf);
   }
@@ -235,7 +241,8 @@ export class NativeOverlayManager {
       this.bundleManager,
       this.getAiConnection,
       this.aiJobs,
-      this.configureAiConnection
+      this.configureAiConnection,
+      this.getRenderAnnotationsAsMarkdown
     );
     this.overlays.set(leaf, overlay);
     this.refresh();
@@ -329,6 +336,7 @@ export class NativeOverlayManager {
  */
 export class NativePdfOverlay {
   private tagGesture = new TagGestureController();
+  private markdownCards = new AnnotationMarkdownCards();
   private destroyed = false;
   private store: AnnotationSetWorkspace | null = null;
   private storeChangeCleanup: (() => void) | null = null;
@@ -393,7 +401,8 @@ export class NativePdfOverlay {
       apiKey: "",
     }),
     private aiJobs: AiJobService = new AiJobService(),
-    private configureAiConnection?: ConfigureAiConnection
+    private configureAiConnection?: ConfigureAiConnection,
+    private getRenderAnnotationsAsMarkdown: () => boolean = () => false
   ) {}
 
   private get app(): App {
@@ -491,6 +500,7 @@ export class NativePdfOverlay {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.markdownCards.release(this.leaf.view);
     this.tagGesture.destroy();
 
     this.closeEditPopover();
@@ -1865,7 +1875,10 @@ export class NativePdfOverlay {
       if (!entry) {
         // Keep a card alive while the user is typing in it, even if its page
         // scrolled out of view; it goes away on the next pass after blur.
-        if (!holdsFocus) card.remove();
+        if (!holdsFocus || (this.getRenderAnnotationsAsMarkdown() && !this.store?.doc.highlights.some((h) => h.id === id))) {
+          this.markdownCards.release(this.leaf.view, card);
+          card.remove();
+        }
         continue;
       }
       const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
@@ -1962,6 +1975,14 @@ export class NativePdfOverlay {
     return card;
   }
 
+  refreshAnnotationPresentation(): void {
+    for (const card of this.marginsEl?.querySelectorAll<HTMLElement>(".lpa-margin-card") ?? []) {
+      const h = this.store?.get(card.dataset.hlId ?? "");
+      if (h) this.syncCardContent(card, h);
+    }
+    this.scheduleRailLayout();
+  }
+
   /** Refresh a card's accent/state/text from the store (skipping any textarea
    * that currently has focus, so in-place edits are never clobbered). */
   private syncCardContent(card: HTMLElement, h: Highlight): void {
@@ -1985,6 +2006,9 @@ export class NativePdfOverlay {
     if (sideNote && doc.activeElement !== sideNote && sideNote.value !== (h.noteContentCJK ?? "")) {
       sideNote.value = h.noteContentCJK ?? "";
     }
+    this.markdownCards.syncCard(this.app, this.leaf.view, card, this.getRenderAnnotationsAsMarkdown(),
+      this.store?.annotationSourcePath(h.id) ?? this.file.path,
+      () => { syncMarginCardPresentation(card); this.scheduleRailLayout(); });
     syncMarginCardPresentation(card);
     const pin = card.querySelector<HTMLElement>(".lpa-pin-btn");
     if (pin) {
@@ -2099,7 +2123,7 @@ export class NativePdfOverlay {
       const note = margins.querySelector<HTMLTextAreaElement>(
         `.lpa-margin-card[data-hl-id="${cssEscape(id)}"] .lpa-margin-note`
       );
-      note?.focus({ preventScroll: true });
+      if (note) this.markdownCards.focus(note);
       if (note) note.selectionStart = note.selectionEnd = note.value.length;
     }, 0);
   }

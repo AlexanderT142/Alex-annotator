@@ -37,6 +37,7 @@ import {
   marginCardSourceText,
   syncMarginCardPresentation,
 } from "./margin-card";
+import { AnnotationMarkdownCards } from "./annotation-markdown";
 import { AnnotationSetWorkspace } from "./annotation-sets";
 import { AnnotationSetManagerModal } from "./annotation-set-ui";
 import { AiAnnotationModal } from "./ai-ui";
@@ -191,6 +192,8 @@ export class PdfAnnotatorView extends FileView {
   private pendingSelection: PendingSelection | null = null;
   private rubberHandle: RubberHandle | null = null;
   private selectionPopoverEl: HTMLElement | null = null;
+  private markdownCards = new AnnotationMarkdownCards();
+  private pendingMarkdownSidebarRender = false;
   private collapsedMargins: Record<"left" | "right", boolean> = { left: false, right: false };
 
   constructor(
@@ -205,7 +208,8 @@ export class PdfAnnotatorView extends FileView {
       apiKey: "",
     }),
     private aiJobs: AiJobService = new AiJobService(),
-    private configureAiConnection?: ConfigureAiConnection
+    private configureAiConnection?: ConfigureAiConnection,
+    private getRenderAnnotationsAsMarkdown: () => boolean = () => false
   ) {
     super(leaf);
     this.navigation = true;
@@ -719,8 +723,39 @@ export class PdfAnnotatorView extends FileView {
     this.updateZoomLabel();
   }
 
+  refreshAnnotationPresentation(): void {
+    for (const margin of [this.leftMarginEl, this.rightMarginEl]) {
+      for (const card of margin?.querySelectorAll<HTMLElement>(".lpa-margin-card") ?? []) {
+        this.syncCardMarkdown(card);
+      }
+    }
+    this.scheduleMarginLayout();
+  }
+
+  private syncCardMarkdown(card: HTMLElement): void {
+    this.markdownCards.syncCard(this.app, this, card, this.getRenderAnnotationsAsMarkdown(),
+      this.store?.annotationSourcePath(card.dataset.hlId ?? "") ?? this.file?.path ?? "",
+      () => { syncMarginCardPresentation(card); this.scheduleMarginLayout(); },
+      () => {
+        // Wait until blur finishes before replacing the editor's card.
+        queueMicrotask(() => {
+          if (this.pendingMarkdownSidebarRender) this.renderAnnotationSidebar();
+        });
+      });
+    syncMarginCardPresentation(card);
+  }
+
   private renderAnnotationSidebar(): void {
     if (!this.leftMarginEl || !this.rightMarginEl || !this.annotationCountEl) return;
+    const editingCard = this.getRenderAnnotationsAsMarkdown() ? this.markdownCards.editingCard() : null;
+    if (editingCard && this.store?.doc.highlights.some((h) => h.id === editingCard.dataset.hlId)) {
+      this.pendingMarkdownSidebarRender = true;
+      this.renderAnnotationRollList();
+      this.syncHighlightBindingState();
+      return;
+    }
+    this.pendingMarkdownSidebarRender = false;
+    this.markdownCards.release(this);
     this.updateElasticMargins();
     this.leftMarginEl.empty();
     this.rightMarginEl.empty();
@@ -914,7 +949,7 @@ export class PdfAnnotatorView extends FileView {
       this.scheduleMarginLayout();
     };
 
-    syncMarginCardPresentation(card);
+    this.syncCardMarkdown(card);
     return card;
   }
 
@@ -1067,7 +1102,7 @@ export class PdfAnnotatorView extends FileView {
   private focusSidebarNote(id: string): void {
     window.setTimeout(() => {
       const note = this.sidebarCardFor(id)?.querySelector<HTMLTextAreaElement>(".lpa-margin-note");
-      note?.focus({ preventScroll: true });
+      if (note) this.markdownCards.focus(note);
       if (note) note.selectionStart = note.selectionEnd = note.value.length;
     }, 0);
   }
@@ -2540,6 +2575,8 @@ export class PdfAnnotatorView extends FileView {
   }
 
   private teardownDocument(): void {
+    this.pendingMarkdownSidebarRender = false;
+    this.markdownCards.release(this);
     this.tagGesture.destroy();
     this.closeMarkPopover();
     this.hideSelectionActions(false);

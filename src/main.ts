@@ -52,6 +52,7 @@ interface LpaSettings {
   registerAsDefaultPdfHandler: boolean;
   /** Inject annotation mode into the native PDF view (experimental). */
   enableNativeOverlay: boolean;
+  renderAnnotationsAsMarkdown: boolean;
   /** Legacy sidecar mode retained only for migration compatibility. */
   annotationStorageMode: AnnotationStorageMode;
   /** Vault-relative folder searched for legacy sidecars and used for exports. */
@@ -63,6 +64,7 @@ interface LpaSettings {
 const DEFAULT_SETTINGS: LpaSettings = {
   registerAsDefaultPdfHandler: false,
   enableNativeOverlay: true,
+  renderAnnotationsAsMarkdown: false,
   annotationStorageMode: "folder",
   annotationStorageFolder: DEFAULT_ANNOTATION_FOLDER,
   ai: DEFAULT_AI_SETTINGS,
@@ -101,7 +103,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
           this.bundleManager,
           () => this.settings.ai,
           this.aiJobs,
-          (patch) => this.configureAiConnection(patch)
+          (patch) => this.configureAiConnection(patch),
+          () => this.settings.renderAnnotationsAsMarkdown
         )
     );
 
@@ -112,7 +115,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       this.bundleManager,
       () => this.settings.ai,
       this.aiJobs,
-      (patch) => this.configureAiConnection(patch)
+      (patch) => this.configureAiConnection(patch),
+      () => this.settings.renderAnnotationsAsMarkdown
     );
 
     // Trigger 1: command palette.
@@ -580,6 +584,22 @@ class LpaSettingTab extends PluginSettingTab {
       text:
         "The command “Open current PDF in annotator” remains available as a stable custom-view fallback.",
     });
+
+    new Setting(containerEl).setName("Rendering").setHeading();
+
+    new Setting(containerEl)
+      .setName("Render annotations as Markdown")
+      .setDesc("Render annotation text as Obsidian Markdown when not editing. Supports formatting, links, and LaTeX/math expressions.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.renderAnnotationsAsMarkdown)
+        .onChange(async (value) => {
+          this.plugin.settings.renderAnnotationsAsMarkdown = value;
+          for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PDF_ANNOTATOR)) {
+            if (leaf.view instanceof PdfAnnotatorView) leaf.view.refreshAnnotationPresentation();
+          }
+          this.plugin.nativeOverlays.refreshAnnotationPresentation();
+          await this.plugin.saveSettings();
+        }));
   }
 }
 
