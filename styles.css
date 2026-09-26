@@ -1812,3 +1812,78 @@ button.lpa-set-visibility:focus-visible {
   font-size: 12px;
   line-height: 1.35;
 }
+
+/* Markdown previews stay within the same card typography and fold viewport. */
+.lpa-margin-card .lpa-margin-note-preview,
+.lpa-margin-card .lpa-margin-side-note-preview {
+  width: 100%;
+  min-width: 0;
+  min-height: 20px;
+  cursor: text;
+  overflow-wrap: anywhere;
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: 10.8px;
+  line-height: 1.28;
+}
+.lpa-margin-card .lpa-margin-note[hidden],
+.lpa-margin-card .lpa-margin-side-note[hidden],
+.lpa-margin-card .lpa-margin-note-preview[hidden],
+.lpa-margin-card .lpa-margin-side-note-preview[hidden] {
+  display: none;
+}
+.lpa-margin.is-tight .lpa-margin-note-preview {
+  min-height: 18px;
+  font-size: 9.6px;
+  line-height: 1.18;
+}
+.lpa-margin.is-compact .lpa-margin-note-preview {
+  min-height: 17px;
+  font-size: 10.2px;
+  line-height: 1.22;
+}
+.lpa-margin.is-roomy .lpa-margin-note-preview { min-height: 30px; }
+.lpa-margin.is-spacious .lpa-margin-note-preview { min-height: 42px; }
+.lpa-margin-card .lpa-margin-side-note-preview {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 0.5px solid color-mix(in srgb, var(--lpa-accent, var(--interactive-accent)) 20%, transparent);
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--lpa-accent, var(--interactive-accent)));
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+}
+.lpa-margin-card:is(.is-hover, .is-active, .is-pinned, :hover) .lpa-margin-side-note-preview {
+  opacity: 1;
+  max-height: none;
+  overflow: visible;
+}
+.lpa-margin-card .lpa-annotation-markdown-content > :first-child { margin-top: 0; }
+.lpa-margin-card .lpa-annotation-markdown-content > :last-child { margin-bottom: 0; }
+.lpa-margin-card .lpa-annotation-markdown-content :is(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6, .math-block) {
+  margin-block: 0.35em;
+}
+.lpa-margin-card .lpa-annotation-markdown-content :is(ul, ol) { padding-inline-start: 1.4em; }
+.lpa-margin-card .lpa-annotation-markdown-content :is(h1, h2, h3, h4, h5, h6) { font-size: 1.1em; }
+.lpa-margin-card .lpa-annotation-markdown-content :is(.math, pre, .table-wrapper) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.lpa-margin-card .lpa-annotation-markdown-content .math-inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+.lpa-margin-card .lpa-annotation-markdown-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.lpa-margin-card .lpa-annotation-markdown-content mjx-container[display="true"] {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.15em;
+  margin-block: 0.35em;
+}
+.lpa-margin-card .lpa-annotation-markdown-content img { max-width: 100%; }
