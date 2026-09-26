@@ -8,6 +8,13 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputDir = mkdtempSync(path.join(tmpdir(), "local-pdf-annotator-tests-"));
 const tests = [
+  {
+    entry: "test/annotation-markdown-smoke.ts",
+    alias: { obsidian: path.join(root, "test/obsidian-stub.ts") },
+    plugins: [{ name: "card-test-pdf-engine", setup(build) {
+      build.onResolve({ filter: /^\.\/pdf-engine$/ }, () => ({ path: path.join(root, "test/pdf-engine-stub.ts") }));
+    } }],
+  },
   { entry: "test/tag-gesture-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/annotation-export-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/anchored-panel-smoke.ts" },
@@ -41,6 +48,7 @@ try {
       format: "cjs",
       outfile,
       alias: test.alias,
+      plugins: test.plugins,
       logLevel: "silent",
     });
     const result = spawnSync(process.execPath, [outfile], { stdio: "inherit" });
