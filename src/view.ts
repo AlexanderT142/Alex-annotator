@@ -13,7 +13,7 @@ import { FileView, TFile, WorkspaceLeaf, Notice, Menu } from "obsidian";
 import { pdfjsLib, initPdfEngine, getPdfEngineStatus, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
 import {
   DEFAULT_COLOR,
-  PALETTE,
+  getSelectionPalette,
   resolvePalette,
   MARK_STYLES,
   MARK_STYLE_LABELS,
@@ -31,12 +31,15 @@ import { parseLegacyNote, targetBasename, type LegacyAnnotation } from "./legacy
 import { PdfBundleManager } from "./bundles";
 import { copyPdfDataForWorker } from "./pdf-data";
 import { TagGestureController } from "./tag-gesture";
+import { applyTagStyle, tagAnchorXPercent, tagStylePatch } from "./tag-region";
 import {
   fitFoldedMarginCardHeights,
   layoutPageBoundedCardTops,
   marginCardSourceText,
+  isMarginCardInteractiveTarget,
   syncMarginCardPresentation,
 } from "./margin-card";
+import { AnnotationMarkdownCards } from "./annotation-markdown";
 import { AnnotationSetWorkspace } from "./annotation-sets";
 import { AnnotationSetManagerModal } from "./annotation-set-ui";
 import { AiAnnotationModal } from "./ai-ui";
@@ -149,6 +152,7 @@ export class PdfAnnotatorView extends FileView {
   private connectionSvg!: SVGSVGElement;
   private annotationCountEl!: HTMLElement;
   private tagModeBtnEl!: HTMLButtonElement;
+  private regionModeBtnEl!: HTMLButtonElement;
   private annotationsBtnEl!: HTMLButtonElement;
   private rollEl!: HTMLElement;
   private rollMetaEl!: HTMLElement;
@@ -162,7 +166,8 @@ export class PdfAnnotatorView extends FileView {
   private store: AnnotationSetWorkspace | null = null;
   private storeChangeCleanup: (() => void) | null = null;
   private jobsRootPath: string | null = null;
-  private currentColor = DEFAULT_COLOR;
+  private currentColorSlot = 0;
+  private get currentColor(): string { return getSelectionPalette()[this.currentColorSlot]?.fill ?? DEFAULT_COLOR; }
   private currentStyle: MarkStyle = "highlight";
   private markPopoverCleanup: (() => void) | null = null;
 
@@ -178,6 +183,7 @@ export class PdfAnnotatorView extends FileView {
   private activeHighlightId: string | null = null;
   private hoverHighlightId: string | null = null;
   private tagPlacementMode = false;
+  private placementTagStyle: "label" | "region" = "label";
   private rollOpen = false;
   private rollSearchQuery = "";
   private marginLayoutRaf: number | null = null;
@@ -191,6 +197,8 @@ export class PdfAnnotatorView extends FileView {
   private pendingSelection: PendingSelection | null = null;
   private rubberHandle: RubberHandle | null = null;
   private selectionPopoverEl: HTMLElement | null = null;
+  private markdownCards = new AnnotationMarkdownCards();
+  private pendingMarkdownSidebarRender = false;
   private collapsedMargins: Record<"left" | "right", boolean> = { left: false, right: false };
 
   constructor(
@@ -205,7 +213,8 @@ export class PdfAnnotatorView extends FileView {
       apiKey: "",
     }),
     private aiJobs: AiJobService = new AiJobService(),
-    private configureAiConnection?: ConfigureAiConnection
+    private configureAiConnection?: ConfigureAiConnection,
+    private getRenderAnnotationsAsMarkdown: () => boolean = () => false
   ) {
     super(leaf);
     this.navigation = true;
@@ -326,7 +335,12 @@ export class PdfAnnotatorView extends FileView {
       text: "Tag",
       attr: { "aria-label": "Place a page note tag" },
     }) as HTMLButtonElement;
-    this.tagModeBtnEl.onclick = () => this.setTagPlacementMode(!this.tagPlacementMode);
+    this.tagModeBtnEl.onclick = () => this.setTagPlacementMode(!this.tagPlacementMode || this.placementTagStyle !== "label", "label");
+    this.regionModeBtnEl = this.toolbarEl.createEl("button", {
+      text: "Region",
+      attr: { "aria-label": "Place a rectangular region", title: "Click on the page, then drag the corner to resize" },
+    });
+    this.regionModeBtnEl.onclick = () => this.setTagPlacementMode(!this.tagPlacementMode || this.placementTagStyle !== "region", "region");
 
     this.annotationsBtnEl = this.toolbarEl.createEl("button", {
       text: "Annotations",
@@ -412,8 +426,8 @@ export class PdfAnnotatorView extends FileView {
     toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
   }
 
-  private setActiveColor(value: string): void {
-    this.currentColor = value;
+  private setActiveColor(value: string, slot = this.currentColorSlot): void {
+    this.currentColorSlot = slot;
     for (const sw of this.swatchEls) sw.toggleClass("is-active", sw.dataset.color === value);
     this.tintStylePreviews();
   }
@@ -427,11 +441,16 @@ export class PdfAnnotatorView extends FileView {
     }
   }
 
-  private setTagPlacementMode(on: boolean): void {
+  private setTagPlacementMode(on: boolean, style: "label" | "region" = this.placementTagStyle): void {
     this.tagPlacementMode = on;
+    this.placementTagStyle = style;
     this.rootEl?.toggleClass("is-tag-mode", on);
-    this.tagModeBtnEl?.toggleClass("is-active", on);
-    this.tagModeBtnEl?.setAttribute("aria-pressed", on ? "true" : "false");
+    const labelMode = on && style === "label";
+    const regionMode = on && style === "region";
+    this.tagModeBtnEl?.toggleClass("is-active", labelMode);
+    this.tagModeBtnEl?.setAttribute("aria-pressed", labelMode ? "true" : "false");
+    this.regionModeBtnEl?.toggleClass("is-active", regionMode);
+    this.regionModeBtnEl?.setAttribute("aria-pressed", regionMode ? "true" : "false");
   }
 
   private setRollOpen(on: boolean): void {
@@ -719,8 +738,39 @@ export class PdfAnnotatorView extends FileView {
     this.updateZoomLabel();
   }
 
+  refreshAnnotationPresentation(): void {
+    for (const margin of [this.leftMarginEl, this.rightMarginEl]) {
+      for (const card of margin?.querySelectorAll<HTMLElement>(".lpa-margin-card") ?? []) {
+        this.syncCardMarkdown(card);
+      }
+    }
+    this.scheduleMarginLayout();
+  }
+
+  private syncCardMarkdown(card: HTMLElement): void {
+    this.markdownCards.syncCard(this.app, this, card, this.getRenderAnnotationsAsMarkdown(),
+      this.store?.annotationSourcePath(card.dataset.hlId ?? "") ?? this.file?.path ?? "",
+      () => { syncMarginCardPresentation(card); this.scheduleMarginLayout(); },
+      () => {
+        // Wait until blur finishes before replacing the editor's card.
+        queueMicrotask(() => {
+          if (this.pendingMarkdownSidebarRender) this.renderAnnotationSidebar();
+        });
+      });
+    syncMarginCardPresentation(card);
+  }
+
   private renderAnnotationSidebar(): void {
     if (!this.leftMarginEl || !this.rightMarginEl || !this.annotationCountEl) return;
+    const editingCard = this.getRenderAnnotationsAsMarkdown() ? this.markdownCards.editingCard() : null;
+    if (editingCard && this.store?.doc.highlights.some((h) => h.id === editingCard.dataset.hlId)) {
+      this.pendingMarkdownSidebarRender = true;
+      this.renderAnnotationRollList();
+      this.syncHighlightBindingState();
+      return;
+    }
+    this.pendingMarkdownSidebarRender = false;
+    this.markdownCards.release(this);
     this.updateElasticMargins();
     this.leftMarginEl.empty();
     this.rightMarginEl.empty();
@@ -841,11 +891,12 @@ export class PdfAnnotatorView extends FileView {
     card.addEventListener("mouseleave", () => this.clearHoveredHighlightSoon(h.id));
     card.addEventListener("contextmenu", (evt) => this.openAnnotationContextMenu(evt, h.id));
     card.addEventListener("click", (evt) => {
-      const target = evt.target as HTMLElement | null;
-      if (target?.closest("textarea,button")) return;
+      if (isMarginCardInteractiveTarget(evt.target)) return;
       void this.revealHighlight(h.id, { scrollSidebar: false });
     });
     card.addEventListener("dblclick", (evt) => {
+      // Preserve text selection and the native behavior of card controls.
+      if (isMarginCardInteractiveTarget(evt.target)) return;
       evt.preventDefault();
       this.activateHighlight(h.id, { focusNote: true });
     });
@@ -914,7 +965,7 @@ export class PdfAnnotatorView extends FileView {
       this.scheduleMarginLayout();
     };
 
-    syncMarginCardPresentation(card);
+    this.syncCardMarkdown(card);
     return card;
   }
 
@@ -922,6 +973,14 @@ export class PdfAnnotatorView extends FileView {
     id: string | null,
     options: { scrollSidebar?: boolean; focusNote?: boolean } = {}
   ): void {
+    // A tag gesture keeps the current textarea focused on pointerdown. An
+    // explicit request to edit another note must finish it before the sidebar
+    // can build that target's card; passive refreshes still preserve typing.
+    const editingCard = options.focusNote && id ? this.markdownCards.editingCard() : null;
+    if (id && editingCard && editingCard.dataset.hlId !== id && this.store?.get(id)) {
+      const active = editingCard.ownerDocument.activeElement as HTMLElement | null;
+      if (active && editingCard.contains(active)) active.blur();
+    }
     const prev = this.activeHighlightId;
     this.activeHighlightId = id;
     if (id && !this.store?.get(id)) this.activeHighlightId = null;
@@ -1067,7 +1126,7 @@ export class PdfAnnotatorView extends FileView {
   private focusSidebarNote(id: string): void {
     window.setTimeout(() => {
       const note = this.sidebarCardFor(id)?.querySelector<HTMLTextAreaElement>(".lpa-margin-note");
-      note?.focus({ preventScroll: true });
+      if (note) this.markdownCards.focus(note);
       if (note) note.selectionStart = note.selectionEnd = note.value.length;
     }, 0);
   }
@@ -1206,6 +1265,12 @@ export class PdfAnnotatorView extends FileView {
       this.teardownPageContent(pv);
     } finally {
       pv.rendering = false;
+      // Zoom can request a replacement while the cancelled task still owns this
+      // page. Once it settles, render the latest scale without reviving an old
+      // document or a page that has left the visible range.
+      if (epoch !== this.renderEpoch && this.pdfDoc && this.pageViews[pv.index] === pv && this.visible.has(pv.index)) {
+        await this.renderPageContent(pv);
+      }
     }
   }
 
@@ -1383,6 +1448,7 @@ export class PdfAnnotatorView extends FileView {
       const x = clamp(0, tag.tagX ?? 0, 100);
       const y = clamp(0, tag.tagY ?? 0, 100);
       const el = pv.noteLayer.createDiv({ cls: "lpa-page-tag" });
+      applyTagStyle(el, tag);
       el.dataset.hlId = tag.id;
       el.dataset.annotationId = tag.id;
       el.setCssProps({ left: `${x}%`, top: `${y}%` });
@@ -1469,6 +1535,7 @@ export class PdfAnnotatorView extends FileView {
       marginSide: "auto",
       isPinned: false,
     };
+    if (this.placementTagStyle === "region") Object.assign(tag, tagStylePatch(tag, "region"));
     this.store.add(tag);
     if (pv.rendered) this.renderTags(pv);
     this.renderAnnotationSidebar();
@@ -1556,17 +1623,18 @@ export class PdfAnnotatorView extends FileView {
     };
 
     const swatches = pop.createDiv({ cls: "lpa-selection-swatches", attr: { "aria-label": "Highlight color" } });
-    for (const p of PALETTE) {
+    for (const [slot, p] of getSelectionPalette().entries()) {
       const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name, title: p.name } });
       sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
-      sw.toggleClass("is-active", p.fill === this.currentColor);
+      sw.dataset.slot = String(slot);
+      sw.toggleClass("is-active", slot === this.currentColorSlot);
       sw.onclick = (evt) => {
         evt.preventDefault();
-        this.setActiveColor(p.fill);
+        this.setActiveColor(p.fill, slot);
         pop.style.setProperty("--lpa-accent", p.ink);
         for (const candidate of Array.from(swatches.querySelectorAll<HTMLElement>(".lpa-swatch"))) {
-          candidate.toggleClass("is-active", candidate.dataset.color === p.fill);
+          candidate.toggleClass("is-active", candidate.dataset.slot === String(slot));
         }
       };
     }
@@ -1786,7 +1854,7 @@ export class PdfAnnotatorView extends FileView {
         sw.toggleClass("is-active", sw.dataset.color === cur);
       }
     };
-    for (const p of PALETTE) {
+    for (const p of getSelectionPalette()) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
       sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
@@ -1958,6 +2026,19 @@ export class PdfAnnotatorView extends FileView {
           new Notice("Copied annotation text");
         })
     );
+    if (annotationTypeOf(h) === "tag") {
+      menu.addItem((item) => item
+        .setTitle(h.tagStyle === "region" ? "Show as page note tag" : "Show as rectangular region")
+        .setIcon("rectangle-horizontal")
+        .onClick(() => {
+          const current = this.store?.get(id);
+          if (!current) return;
+          this.store?.update(id, tagStylePatch(current, current.tagStyle === "region" ? "label" : "region"));
+          const pv = this.pageViews[current.page];
+          if (pv?.rendered) this.renderTags(pv);
+          this.renderAnnotationSidebar();
+        }));
+    }
     menu.addItem((item) =>
       item
         .setTitle("Change color")
@@ -1990,7 +2071,7 @@ export class PdfAnnotatorView extends FileView {
     const doc = this.pagesEl.ownerDocument;
     const pop = doc.body.createDiv({ cls: "lpa-mark-popover lpa-color-popover" });
     const colorRow = pop.createDiv({ cls: "lpa-swatches" });
-    for (const p of PALETTE) {
+    for (const p of getSelectionPalette()) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
       sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
@@ -2066,9 +2147,9 @@ export class PdfAnnotatorView extends FileView {
     const explicit = h.marginSide === "left" || h.marginSide === "right" ? h.marginSide : null;
     if (annotationTypeOf(h) === "tag") {
       if (typeof h.tagX !== "number" || typeof h.tagY !== "number") return null;
-      const sourceXViewport = pageRect.left + (clamp(0, h.tagX, 100) / 100) * pageRect.width;
-      const sourceYViewport = pageRect.top + (clamp(0, h.tagY, 100) / 100) * pageRect.height;
       const side = this.chooseMarginSide(explicit, h.tagX < 50 ? "left" : "right");
+      const sourceXViewport = pageRect.left + (tagAnchorXPercent(h, side) / 100) * pageRect.width;
+      const sourceYViewport = pageRect.top + (clamp(0, h.tagY, 100) / 100) * pageRect.height;
       return {
         side,
         sourceX: sourceXViewport - bodyRect.left,
@@ -2459,6 +2540,10 @@ export class PdfAnnotatorView extends FileView {
   }
 
   private onDocumentKeyDown(evt: KeyboardEvent): void {
+    if (evt.key === "Escape" && this.tagPlacementMode) {
+      this.setTagPlacementMode(false);
+      return;
+    }
     if ((!evt.metaKey && !evt.ctrlKey) || evt.altKey) return;
     const target = evt.target instanceof Node ? evt.target : null;
     const active = this.contentEl.ownerDocument.activeElement;
@@ -2540,6 +2625,8 @@ export class PdfAnnotatorView extends FileView {
   }
 
   private teardownDocument(): void {
+    this.pendingMarkdownSidebarRender = false;
+    this.markdownCards.release(this);
     this.tagGesture.destroy();
     this.closeMarkPopover();
     this.hideSelectionActions(false);
@@ -2807,7 +2894,7 @@ function tagPreview(h: Highlight): string {
 }
 
 function annotationKindLabel(h: Highlight): string {
-  if (annotationTypeOf(h) === "tag") return "tag";
+  if (annotationTypeOf(h) === "tag") return h.tagStyle === "region" ? "region" : "tag";
   const st = markStyleOf(h);
   return st === "highlight" ? "highlight" : MARK_STYLE_LABELS[st].toLowerCase();
 }

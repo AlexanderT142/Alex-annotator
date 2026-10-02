@@ -46,6 +46,47 @@ export class Notice {
   constructor(message: string) { Notice.messages.push(message); }
 }
 
+export class Component {
+  children = new Set<Component>();
+  private cleanups: Array<() => void> = [];
+  private loaded = false;
+  addChild<T extends Component>(child: T): T {
+    this.children.add(child);
+    if (this.loaded) child.load();
+    return child;
+  }
+  removeChild<T extends Component>(child: T): T {
+    child.unload();
+    this.children.delete(child);
+    return child;
+  }
+  register(fn: () => void): void { this.cleanups.push(fn); }
+  registerDomEvent(el: EventTarget, type: string, fn: EventListener): void {
+    el.addEventListener(type, fn);
+    this.register(() => el.removeEventListener(type, fn));
+  }
+  load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    this.onload();
+    for (const child of this.children) child.load();
+  }
+  unload(): void {
+    if (!this.loaded) return;
+    this.loaded = false;
+    this.onunload();
+    for (const child of this.children) child.unload();
+    this.children.clear();
+    for (const cleanup of this.cleanups.splice(0)) cleanup();
+  }
+  onload(): void {}
+  onunload(): void {}
+}
+
+export class MarkdownRenderer {
+  static render: (...args: any[]) => Promise<void> = async () => {};
+}
+
 export async function requestUrl(args: {
   url: string;
   method?: string;
@@ -64,3 +105,10 @@ export async function requestUrl(args: {
   if (args.throw !== false && !response.ok) throw new Error(`HTTP ${response.status}`);
   return { status: response.status, text, json };
 }
+
+export class FileView extends Component {
+  app: any;
+  constructor(public leaf: any) { super(); this.app = leaf.app; }
+}
+export class Menu {}
+export function setIcon(): void {}

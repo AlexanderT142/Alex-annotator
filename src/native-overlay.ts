@@ -35,7 +35,7 @@ import { App, Menu, Notice, Plugin, TFile, WorkspaceLeaf, setIcon } from "obsidi
 import { pdfjsLib, initPdfEngine, createDedicatedWorker, LOG_TAG } from "./pdf-engine";
 import {
   DEFAULT_COLOR,
-  PALETTE,
+  getSelectionPalette,
   resolvePalette,
   MARK_STYLES,
   MARK_STYLE_LABELS,
@@ -53,12 +53,15 @@ import { parseLegacyNote, targetBasename, type LegacyAnnotation } from "./legacy
 import { PdfBundleManager } from "./bundles";
 import { copyPdfDataForWorker } from "./pdf-data";
 import { TagGestureController } from "./tag-gesture";
+import { applyTagStyle, tagAnchorXPercent, tagStylePatch } from "./tag-region";
 import {
   fitFoldedMarginCardHeights,
   layoutPageBoundedCardTops,
   marginCardSourceText,
+  isMarginCardInteractiveTarget,
   syncMarginCardPresentation,
 } from "./margin-card";
+import { AnnotationMarkdownCards } from "./annotation-markdown";
 import { AnnotationSetWorkspace } from "./annotation-sets";
 import { AnnotationSetManagerModal } from "./annotation-set-ui";
 import { AiAnnotationModal } from "./ai-ui";
@@ -158,7 +161,8 @@ export class NativeOverlayManager {
       apiKey: "",
     }),
     private aiJobs: AiJobService = new AiJobService(),
-    private configureAiConnection?: ConfigureAiConnection
+    private configureAiConnection?: ConfigureAiConnection,
+    private getRenderAnnotationsAsMarkdown: () => boolean = () => false
   ) {}
 
   private get app(): App {
@@ -213,6 +217,10 @@ export class NativeOverlayManager {
     return leaf ? this.overlays.get(leaf) ?? null : null;
   }
 
+  refreshAnnotationPresentation(): void {
+    for (const overlay of this.overlays.values()) overlay.refreshAnnotationPresentation();
+  }
+
   activeOverlay(): NativePdfOverlay | null {
     return this.overlayFor(this.app.workspace.activeLeaf);
   }
@@ -235,7 +243,8 @@ export class NativeOverlayManager {
       this.bundleManager,
       this.getAiConnection,
       this.aiJobs,
-      this.configureAiConnection
+      this.configureAiConnection,
+      this.getRenderAnnotationsAsMarkdown
     );
     this.overlays.set(leaf, overlay);
     this.refresh();
@@ -329,6 +338,7 @@ export class NativeOverlayManager {
  */
 export class NativePdfOverlay {
   private tagGesture = new TagGestureController();
+  private markdownCards = new AnnotationMarkdownCards();
   private destroyed = false;
   private store: AnnotationSetWorkspace | null = null;
   private storeChangeCleanup: (() => void) | null = null;
@@ -343,9 +353,11 @@ export class NativePdfOverlay {
   private syncQueued = false;
   private cleanups: Array<() => void> = [];
 
-  private currentColor = DEFAULT_COLOR;
+  private currentColorSlot = 0;
+  private get currentColor(): string { return getSelectionPalette()[this.currentColorSlot]?.fill ?? DEFAULT_COLOR; }
   private currentStyle: MarkStyle = "highlight";
   private tagMode = false;
+  private placementTagStyle: "label" | "region" = "label";
   private warnedRotated = false;
 
   private pendingSelection: { text: string; byPage: Map<number, PdfRect[]> } | null = null;
@@ -353,6 +365,7 @@ export class NativePdfOverlay {
   private editPopoverCleanup: (() => void) | null = null;
 
   private tagBtn: HTMLButtonElement | null = null;
+  private regionBtn: HTMLButtonElement | null = null;
   private setsBtn: HTMLButtonElement | null = null;
   private aiBtn: HTMLButtonElement | null = null;
   private listBtn: HTMLButtonElement | null = null;
@@ -393,7 +406,8 @@ export class NativePdfOverlay {
       apiKey: "",
     }),
     private aiJobs: AiJobService = new AiJobService(),
-    private configureAiConnection?: ConfigureAiConnection
+    private configureAiConnection?: ConfigureAiConnection,
+    private getRenderAnnotationsAsMarkdown: () => boolean = () => false
   ) {}
 
   private get app(): App {
@@ -491,6 +505,7 @@ export class NativePdfOverlay {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.markdownCards.release(this.leaf.view);
     this.tagGesture.destroy();
 
     this.closeEditPopover();
@@ -619,7 +634,18 @@ export class NativePdfOverlay {
     this.tagBtn.onclick = (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
-      this.setTagMode(!this.tagMode);
+      this.setTagMode(!this.tagMode || this.placementTagStyle !== "label", "label");
+    };
+
+    this.regionBtn = group.createEl("button", {
+      cls: "lpa-native-btn clickable-icon",
+      attr: { type: "button", "aria-label": "Place a rectangular region", title: "Place a rectangular region · Click on the page, then drag the corner to resize" },
+    });
+    setIcon(this.regionBtn, "rectangle-horizontal");
+    this.regionBtn.onclick = (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.setTagMode(!this.tagMode || this.placementTagStyle !== "region", "region");
     };
 
     this.listBtn = group.createEl("button", {
@@ -645,6 +671,8 @@ export class NativePdfOverlay {
     this.aiBtn = null;
     this.tagBtn?.remove();
     this.tagBtn = null;
+    this.regionBtn?.remove();
+    this.regionBtn = null;
     this.listBtn?.remove();
     this.listBtn = null;
     this.countEl?.remove();
@@ -652,8 +680,12 @@ export class NativePdfOverlay {
   }
 
   private syncToolbarState(): void {
-    this.tagBtn?.toggleClass("is-active", this.tagMode);
-    this.tagBtn?.setAttribute("aria-pressed", this.tagMode ? "true" : "false");
+    const labelMode = this.tagMode && this.placementTagStyle === "label";
+    const regionMode = this.tagMode && this.placementTagStyle === "region";
+    this.tagBtn?.toggleClass("is-active", labelMode);
+    this.tagBtn?.setAttribute("aria-pressed", labelMode ? "true" : "false");
+    this.regionBtn?.toggleClass("is-active", regionMode);
+    this.regionBtn?.setAttribute("aria-pressed", regionMode ? "true" : "false");
     this.listBtn?.toggleClass("is-active", !!this.listPanelEl);
     this.listBtn?.setAttribute("aria-pressed", this.listPanelEl ? "true" : "false");
     if (this.setsBtn && this.store) {
@@ -706,8 +738,9 @@ export class NativePdfOverlay {
     this.notifyStoreChanged();
   }
 
-  private setTagMode(on: boolean): void {
+  private setTagMode(on: boolean, style: "label" | "region" = this.placementTagStyle): void {
     this.tagMode = on;
+    this.placementTagStyle = style;
     this.contentRoot?.toggleClass("lpa-native-tag-mode", on);
     this.syncToolbarState();
   }
@@ -929,6 +962,7 @@ export class NativePdfOverlay {
     const x = clamp(0, tag.tagX ?? 0, 100);
     const y = clamp(0, tag.tagY ?? 0, 100);
     const el = noteLayer.createDiv({ cls: "lpa-page-tag" });
+    applyTagStyle(el, tag);
     el.dataset.hlId = tag.id;
     el.dataset.annotationId = tag.id;
     el.setCssProps({ left: `${x}%`, top: `${y}%` });
@@ -1100,17 +1134,18 @@ export class NativePdfOverlay {
     };
 
     const swatches = pop.createDiv({ cls: "lpa-selection-swatches", attr: { "aria-label": "Highlight color" } });
-    for (const p of PALETTE) {
+    for (const [slot, p] of getSelectionPalette().entries()) {
       const sw = swatches.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name, title: p.name } });
       sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
-      sw.toggleClass("is-active", p.fill === this.currentColor);
+      sw.dataset.slot = String(slot);
+      sw.toggleClass("is-active", slot === this.currentColorSlot);
       sw.onclick = (evt) => {
         evt.preventDefault();
-        this.currentColor = p.fill;
+        this.currentColorSlot = slot;
         pop.style.setProperty("--lpa-accent", p.ink);
         for (const candidate of Array.from(swatches.querySelectorAll<HTMLElement>(".lpa-swatch"))) {
-          candidate.toggleClass("is-active", candidate.dataset.color === p.fill);
+          candidate.toggleClass("is-active", candidate.dataset.slot === String(slot));
         }
       };
     }
@@ -1255,6 +1290,7 @@ export class NativePdfOverlay {
       marginSide: "auto",
       isPinned: false,
     };
+    if (this.placementTagStyle === "region") Object.assign(tag, tagStylePatch(tag, "region"));
     store.add(tag);
     this.repaintPage(hit.idx);
     this.notifyStoreChanged();
@@ -1295,6 +1331,29 @@ export class NativePdfOverlay {
       this.notifyStoreChanged();
     };
 
+    if (type === "tag") {
+      const tagStyles = pop.createDiv({ cls: "lpa-styles", attr: { role: "group", "aria-label": "Page note appearance" } });
+      const sync = () => {
+        const style = store.get(id)?.tagStyle === "region" ? "region" : "label";
+        for (const button of Array.from(tagStyles.children) as HTMLElement[]) {
+          button.toggleClass("is-active", button.dataset.tagStyle === style);
+          button.setAttribute("aria-pressed", String(button.dataset.tagStyle === style));
+        }
+      };
+      for (const style of ["label", "region"] as const) {
+        const button = tagStyles.createEl("button", { text: style === "region" ? "Region" : "Tag" });
+        button.dataset.tagStyle = style;
+        button.onclick = () => {
+          const current = store.get(id);
+          if (!current) return;
+          store.update(id, tagStylePatch(current, style));
+          repaint();
+          sync();
+        };
+      }
+      sync();
+    }
+
     let styleRow: HTMLElement | null = null;
     if (type === "highlight") {
       styleRow = pop.createDiv({ cls: "lpa-styles", attr: { role: "radiogroup", "aria-label": "Mark style" } });
@@ -1331,7 +1390,7 @@ export class NativePdfOverlay {
         sw.toggleClass("is-active", sw.dataset.color === active);
       }
     };
-    for (const p of PALETTE) {
+    for (const p of getSelectionPalette()) {
       const sw = colorRow.createEl("button", { cls: "lpa-swatch", attr: { "aria-label": p.name } });
       sw.setCssProps({ background: p.fill });
       sw.dataset.color = p.fill;
@@ -1792,9 +1851,9 @@ export class NativePdfOverlay {
 
     if (annotationTypeOf(h) === "tag") {
       if (typeof h.tagX !== "number" || typeof h.tagY !== "number") return null;
-      const sourceX = pageLeftX + (clamp(0, h.tagX, 100) / 100) * box.width;
-      const sourceY = box.top - areaRect.top + (clamp(0, h.tagY, 100) / 100) * box.height;
       const side = this.chooseRailSide(explicit, h.tagX < 50 ? "left" : "right");
+      const sourceX = pageLeftX + (tagAnchorXPercent(h, side) / 100) * box.width;
+      const sourceY = box.top - areaRect.top + (clamp(0, h.tagY, 100) / 100) * box.height;
       return {
         side,
         sourceX,
@@ -1865,7 +1924,10 @@ export class NativePdfOverlay {
       if (!entry) {
         // Keep a card alive while the user is typing in it, even if its page
         // scrolled out of view; it goes away on the next pass after blur.
-        if (!holdsFocus) card.remove();
+        if (!holdsFocus || (this.getRenderAnnotationsAsMarkdown() && !this.store?.doc.highlights.some((h) => h.id === id))) {
+          this.markdownCards.release(this.leaf.view, card);
+          card.remove();
+        }
         continue;
       }
       const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
@@ -1892,12 +1954,13 @@ export class NativePdfOverlay {
     card.addEventListener("mouseleave", () => this.clearHoveredAnnotationSoon(h.id));
     card.addEventListener("contextmenu", (evt) => this.openCardContextMenu(evt, h.id));
     card.addEventListener("click", (evt) => {
-      const target = evt.target as HTMLElement | null;
-      if (target?.closest("textarea,button")) return;
+      if (isMarginCardInteractiveTarget(evt.target)) return;
       this.setActiveAnnotation(h.id);
       void this.revealAnnotation(h.id);
     });
     card.addEventListener("dblclick", (evt) => {
+      // Preserve text selection and the native behavior of card controls.
+      if (isMarginCardInteractiveTarget(evt.target)) return;
       evt.preventDefault();
       this.focusRailNote(h.id);
     });
@@ -1962,6 +2025,14 @@ export class NativePdfOverlay {
     return card;
   }
 
+  refreshAnnotationPresentation(): void {
+    for (const card of this.marginsEl?.querySelectorAll<HTMLElement>(".lpa-margin-card") ?? []) {
+      const h = this.store?.get(card.dataset.hlId ?? "");
+      if (h) this.syncCardContent(card, h);
+    }
+    this.scheduleRailLayout();
+  }
+
   /** Refresh a card's accent/state/text from the store (skipping any textarea
    * that currently has focus, so in-place edits are never clobbered). */
   private syncCardContent(card: HTMLElement, h: Highlight): void {
@@ -1985,6 +2056,9 @@ export class NativePdfOverlay {
     if (sideNote && doc.activeElement !== sideNote && sideNote.value !== (h.noteContentCJK ?? "")) {
       sideNote.value = h.noteContentCJK ?? "";
     }
+    this.markdownCards.syncCard(this.app, this.leaf.view, card, this.getRenderAnnotationsAsMarkdown(),
+      this.store?.annotationSourcePath(h.id) ?? this.file.path,
+      () => { syncMarginCardPresentation(card); this.scheduleRailLayout(); });
     syncMarginCardPresentation(card);
     const pin = card.querySelector<HTMLElement>(".lpa-pin-btn");
     if (pin) {
@@ -2099,7 +2173,7 @@ export class NativePdfOverlay {
       const note = margins.querySelector<HTMLTextAreaElement>(
         `.lpa-margin-card[data-hl-id="${cssEscape(id)}"] .lpa-margin-note`
       );
-      note?.focus({ preventScroll: true });
+      if (note) this.markdownCards.focus(note);
       if (note) note.selectionStart = note.selectionEnd = note.value.length;
     }, 0);
   }
@@ -2861,7 +2935,7 @@ function tagPreview(h: Highlight): string {
 }
 
 function annotationKindLabel(h: Highlight): string {
-  if (annotationTypeOf(h) === "tag") return "tag";
+  if (annotationTypeOf(h) === "tag") return h.tagStyle === "region" ? "region" : "tag";
   const st = markStyleOf(h);
   return st === "highlight" ? "highlight" : MARK_STYLE_LABELS[st].toLowerCase();
 }

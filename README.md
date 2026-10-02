@@ -40,7 +40,9 @@ Select some words and choose what you want to do:
 
 You can use a plain highlight, underline, dotted underline, dashed underline,
 box, or strike-through. Four colours help different kinds of thought stand
-apart.
+apart. Open **Settings → PDF Annotator → Annotation colors** to customize each
+slot with a full-spectrum color picker. Reset a slot to restore its default.
+Existing annotations retain their saved colors.
 
 ## Open one note fully
 
@@ -67,6 +69,23 @@ independently into any rectangle. Larger tags show more of your note. Click to
 edit as usual, or press Escape during a move or resize to cancel. Position and
 size are saved when you release and stay proportional when you zoom or reopen
 the PDF. This works in both the native PDF viewer and the separate reader.
+
+Use **Region** (the outlined rectangle button in the native toolbar) to annotate
+a diagram: click a location on the page, then drag the outline to move it or its
+bottom-right corner to resize it. The transparent rectangle links to its own
+annotation card, with the same notes, pins, sets, and navigation as a page tag.
+The area inside the outline remains available for selecting PDF text and links.
+In the native editor, switch between **Tag** and **Region**; in the separate
+reader, right-click the annotation and choose the corresponding conversion.
+
+## Render Markdown, code, and math
+
+Enable **Settings → PDF Annotator → Render annotations as Markdown** for formatted
+notes, fenced code blocks, and inline or display LaTeX through Obsidian's native
+renderer. It is off by default. Click a preview to edit its original Markdown;
+leave the editor to see the rendered result. Links remain clickable, and both
+the main note and side note are supported. Turning this off restores plain text
+editors without changing your saved notes.
 
 Right-click any card to keep it open, move it to the left, move it to the right,
 let PDF Annotator choose a side, or delete it.

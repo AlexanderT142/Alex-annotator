@@ -98,6 +98,9 @@ async function main(): Promise<void> {
   assert.equal(workspace.doc.highlights.length, 2, "two visible sets compose in one view");
   assert.equal(workspace.get("personal1")?.setId, "default");
   assert.equal(workspace.get("study001")?.setId, second.id);
+  assert.equal(workspace.annotationSourcePath("personal1"), ".pdf-annotator/bundles/sha256/hash/annotation-sets/default.md");
+  assert.equal(workspace.annotationSourcePath("study001"), `.pdf-annotator/bundles/sha256/hash/annotation-sets/${second.id}.md`);
+  assert.equal(workspace.annotationSourcePath("missing"), "Books/book.pdf");
 
   await workspace.setVisible("default", false);
   assert.deepEqual(workspace.byPage(4).map((h) => h.id), ["study001"], "visibility filters painting");

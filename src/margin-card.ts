@@ -1,3 +1,11 @@
+/** Card navigation shortcuts must not steal selection or control interactions.
+ * Duck typing also works for elements in Obsidian pop-out windows. */
+export function isMarginCardInteractiveTarget(target: EventTarget | null): boolean {
+  return !!(target as HTMLElement | null)?.closest?.(
+    "textarea,input,select,button,a,[contenteditable]:not([contenteditable='false'])"
+  );
+}
+
 /** Preserve the complete selected passage while normalising PDF text-layer
  * whitespace for a readable margin-card quotation. */
 export function marginCardSourceText(text: string): string {
@@ -114,6 +122,7 @@ function displayUnits(text: string, weight = 1): number {
  * length; the card itself supplies the collapsed/expanded viewport rules. */
 export function syncMarginCardPresentation(card: HTMLElement): void {
   for (const textarea of card.querySelectorAll<HTMLTextAreaElement>("textarea")) {
+    if (textarea.hidden) continue;
     textarea.setCssProps({ height: "auto" });
     textarea.setCssProps({ height: `${Math.max(textarea.scrollHeight, 20)}px` });
   }

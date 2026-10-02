@@ -23,6 +23,7 @@ import { NativeOverlayManager } from "./native-overlay";
 import { AnchoredPanel } from "./anchored-panel";
 import {
   DEFAULT_ANNOTATION_FOLDER,
+  PALETTE, configureSelectionPalette, getSelectionPalette, normalizePaletteColors, palettePickerHex,
   normalizeAnnotationStorageFolder,
   type AnnotationPathOptions,
   type AnnotationStorageMode,
@@ -48,10 +49,12 @@ import { AiJobService } from "./ai-jobs";
 import { AiCredentialStore } from "./ai-credentials";
 
 interface LpaSettings {
+  paletteColors: string[];
   /** Override Obsidian's core PDF viewer so clicking a PDF opens this view. */
   registerAsDefaultPdfHandler: boolean;
   /** Inject annotation mode into the native PDF view (experimental). */
   enableNativeOverlay: boolean;
+  renderAnnotationsAsMarkdown: boolean;
   /** Legacy sidecar mode retained only for migration compatibility. */
   annotationStorageMode: AnnotationStorageMode;
   /** Vault-relative folder searched for legacy sidecars and used for exports. */
@@ -61,8 +64,10 @@ interface LpaSettings {
 }
 
 const DEFAULT_SETTINGS: LpaSettings = {
+  paletteColors: [],
   registerAsDefaultPdfHandler: false,
   enableNativeOverlay: true,
+  renderAnnotationsAsMarkdown: false,
   annotationStorageMode: "folder",
   annotationStorageFolder: DEFAULT_ANNOTATION_FOLDER,
   ai: DEFAULT_AI_SETTINGS,
@@ -101,7 +106,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
           this.bundleManager,
           () => this.settings.ai,
           this.aiJobs,
-          (patch) => this.configureAiConnection(patch)
+          (patch) => this.configureAiConnection(patch),
+          () => this.settings.renderAnnotationsAsMarkdown
         )
     );
 
@@ -112,7 +118,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       this.bundleManager,
       () => this.settings.ai,
       this.aiJobs,
-      (patch) => this.configureAiConnection(patch)
+      (patch) => this.configureAiConnection(patch),
+      () => this.settings.renderAnnotationsAsMarkdown
     );
 
     // Trigger 1: command palette.
@@ -352,6 +359,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     const saved = (await this.loadData()) ?? {};
     const legacyApiKey = typeof saved?.ai?.apiKey === "string" ? saved.ai.apiKey.trim() : "";
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+    this.settings.renderAnnotationsAsMarkdown = saved.renderAnnotationsAsMarkdown === true;
     this.settings.annotationStorageMode = coerceAnnotationStorageMode(
       this.settings.annotationStorageMode
     );
@@ -359,6 +367,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       this.settings.annotationStorageFolder
     );
     this.settings.ai = normalizeAiSettings(this.settings.ai);
+    this.settings.paletteColors = normalizePaletteColors(this.settings.paletteColors);
+    configureSelectionPalette(this.settings.paletteColors);
     try {
       this.settings.ai.apiKey = this.credentials().migrate(this.settings.ai, legacyApiKey);
       if (legacyApiKey) await this.saveSettings();
@@ -456,6 +466,27 @@ class LpaSettingTab extends PluginSettingTab {
           else this.plugin.nativeOverlays.disable();
         })
       );
+
+    new Setting(containerEl).setName("Annotation colors").setHeading();
+    containerEl.createEl("p", { cls: "setting-item-description", text:
+      "Choose any color for the four palette slots. Changes apply to new marks and color choices; existing annotations keep their saved colors." });
+    PALETTE.forEach((entry, i) => {
+      new Setting(containerEl)
+        .setName(`Color ${i + 1} (${entry.name} slot)`)
+        .addColorPicker(picker => picker
+          .setValue(palettePickerHex(getSelectionPalette()[i]))
+          .onChange(async value => {
+            this.plugin.settings.paletteColors[i] = value;
+            configureSelectionPalette(this.plugin.settings.paletteColors);
+            await this.plugin.saveSettings();
+          }))
+        .addExtraButton(button => button.setIcon("reset").setTooltip("Restore default color").onClick(async () => {
+          this.plugin.settings.paletteColors[i] = "";
+          configureSelectionPalette(this.plugin.settings.paletteColors);
+          await this.plugin.saveSettings();
+          this.display();
+        }));
+    });
 
     new Setting(containerEl).setName("AI annotation").setHeading();
     containerEl.createEl("p", {
@@ -580,6 +611,22 @@ class LpaSettingTab extends PluginSettingTab {
       text:
         "The command “Open current PDF in annotator” remains available as a stable custom-view fallback.",
     });
+
+    new Setting(containerEl).setName("Rendering").setHeading();
+
+    new Setting(containerEl)
+      .setName("Render annotations as Markdown")
+      .setDesc("Render annotation text as Obsidian Markdown when not editing. Supports formatting, links, and LaTeX/math expressions.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.renderAnnotationsAsMarkdown)
+        .onChange(async (value) => {
+          this.plugin.settings.renderAnnotationsAsMarkdown = value;
+          for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PDF_ANNOTATOR)) {
+            if (leaf.view instanceof PdfAnnotatorView) leaf.view.refreshAnnotationPresentation();
+          }
+          this.plugin.nativeOverlays.refreshAnnotationPresentation();
+          await this.plugin.saveSettings();
+        }));
   }
 }
 

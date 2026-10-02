@@ -39,14 +39,14 @@ function event(target: EventTarget, type: string, props: object = {}) {
   return e;
 }
 const tag: Highlight = { id: "tag", type: "tag", page: 0, color: "blue", text: "", note: "A completed note worth preserving.", tagX: 20, tagY: 25, rects: [], created: "2026-09-09", isPinned: true };
-function fixture() {
+function fixture(value = tag) {
   const doc = new DomTarget() as any;
   doc.defaultView = Object.assign(new DomTarget(), { setTimeout, clearTimeout });
   const layer = new Surface(); layer.ownerDocument = doc;
   const el = layer.createDiv(); el.box = { left: 150, top: 388, width: 100, height: 24 };
   const controller = new TagGestureController();
   const commits: TagGeometry[] = [];
-  controller.bind(el as any, layer as any, { ...tag }, geometry => commits.push(geometry), () => {});
+  controller.bind(el as any, layer as any, { ...value }, geometry => commits.push(geometry), () => {});
   return { doc, layer, el, controller, commits };
 }
 const near = (actual: number | undefined, expected: number) => assert.ok(Math.abs(actual! - expected) < 1e-8, `${actual} != ${expected}`);
@@ -136,16 +136,38 @@ for (const [x, y, width, height] of [[400, 412, 50, 3], [250, 700, 20, 39], [-99
   near(g.tagWidth, width); near(g.tagHeight, height);
   near(g.tagX! - g.tagWidth! / 2, 10); near(g.tagY! - g.tagHeight! / 2, 23.5);
 }
+// Regions use the same gesture controller and must retain their rectangular size on cancel.
+for (const cancellation of ["Escape", "pointercancel", "repaint", "destroy"]) {
+  const f = fixture({ ...tag, tagStyle: "region", tagWidth: 20, tagHeight: 3 });
+  event(f.el, "pointerdown", { target: f.el.children[0], clientX: 248, clientY: 410 });
+  event(f.doc, "pointermove", { clientX: 448, clientY: 510 });
+  if (cancellation === "Escape") event(f.doc, "keydown", { key: "Escape" });
+  else if (cancellation === "repaint") f.controller.cancelIn(f.layer as any);
+  else if (cancellation === "destroy") f.controller.destroy();
+  else event(f.doc, cancellation);
+  event(f.doc, "pointerup", { clientX: 500 });
+  assert.equal(f.commits.length, 0, `region ${cancellation}`);
+  assert.equal(f.el.props.width, "20%"); assert.equal(f.el.props.height, "3%");
+  f.controller.destroy();
+}
 async function persistence() {
   const adapter = new MemoryAdapter();
   const options = { adapter: adapter as any, setsRootPath: "sets", indexPath: "sets/index.json", legacyAnnotationPath: "legacy.md", pdfBasename: "Book", pdfVaultPath: "Book.pdf" };
   let workspace = await AnnotationSetWorkspace.open(options);
   workspace.add({ ...tag });
+  workspace.add({ ...tag, id: "region", tagStyle: "region", tagWidth: 24, tagHeight: 14 });
   const other = await workspace.createSet("Other notes");
   await workspace.setActive(other.id);
   workspace.update(tag.id, { tagX: 40, tagY: 30, tagWidth: 60, tagHeight: 8 });
+  workspace.update("region", { tagX: 60, tagY: 40, tagWidth: 30, tagHeight: 20 });
   await workspace.release();
   workspace = await AnnotationSetWorkspace.open(options);
+  const savedRegion = workspace.get("region")!;
+  assert.equal(savedRegion.tagStyle, "region");
+  assert.equal(savedRegion.note, tag.note); assert.equal(savedRegion.isPinned, true);
+  assert.equal(savedRegion.setId, "default");
+  near(savedRegion.tagX, 60); near(savedRegion.tagY, 40); near(savedRegion.tagWidth, 30); near(savedRegion.tagHeight, 20);
+  assert.equal(workspace.get(tag.id)!.tagStyle, undefined, "legacy labels are not converted on save");
   const saved = workspace.get(tag.id)!;
   assert.equal(saved.setId, "default", "moving a tag must retain its original set");
   assert.equal(saved.note, tag.note); assert.equal(saved.isPinned, true);

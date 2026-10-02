@@ -74,6 +74,7 @@ export interface Highlight {
   tagY?: number; // percentage of page height, for page-note tags
   tagWidth?: number; // optional user-resized width, percentage of page width
   tagHeight?: number; // optional user-resized height, percentage of page height
+  tagStyle?: "label" | "region"; // absent => page-note label; region shares its annotation and geometry
   tagColor?: string; // optional tag color; falls back to color
   isPinned?: boolean; // whether the margin card stays expanded / visible
   marginSide?: "left" | "right" | "auto"; // explicit override, otherwise source-based
@@ -135,6 +136,34 @@ export const PALETTE: PaletteEntry[] = [
   { name: "pink", fill: "rgba(255, 76, 174, 0.46)", ink: "rgba(202, 32, 122, 0.96)", emoji: "🟪" },
   { name: "red", fill: "rgba(246, 94, 82, 0.44)", ink: "rgba(188, 54, 45, 0.96)", emoji: "🟥" },
 ];
+
+/** Picker preferences only: never reinterpret or rewrite existing annotation colors. */
+let selectionPalette: PaletteEntry[] = PALETTE;
+
+export function normalizePaletteColors(value: unknown): string[] {
+  return PALETTE.map((_, i) => Array.isArray(value) && typeof value[i] === "string"
+    && /^#[0-9a-f]{6}$/i.test(value[i]) ? value[i].toUpperCase() : "");
+}
+
+export function configureSelectionPalette(value: unknown): void {
+  const colors = normalizePaletteColors(value);
+  selectionPalette = PALETTE.map((entry, i) => {
+    const fill = colors[i];
+    if (!fill) return { ...entry };
+    const rgb = [1, 3, 5].map(offset => parseInt(fill.slice(offset, offset + 2), 16));
+    return { name: entry.name, emoji: entry.emoji, fill,
+      ink: `rgba(${rgb.map(v => Math.round(v * 0.62)).join(", ")}, 0.95)` };
+  });
+}
+
+export function getSelectionPalette(): readonly PaletteEntry[] { return selectionPalette; }
+
+/** Native color inputs require opaque six-digit hex, including for default rgba slots. */
+export function palettePickerHex(entry: PaletteEntry): string {
+  if (/^#[0-9a-f]{6}$/i.test(entry.fill)) return entry.fill;
+  const rgb = entry.fill.match(/^rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/);
+  return rgb ? "#" + rgb.slice(1, 4).map(v => Number(v).toString(16).padStart(2, "0")).join("") : "#FBF719";
+}
 
 /** name → fill, kept for any code that wants the simple map. */
 export const HL_COLORS: Record<string, string> = Object.fromEntries(

@@ -158,6 +158,12 @@ export class AnnotationSetWorkspace {
     return meta ? { ...meta } : null;
   }
 
+  /** Markdown context belongs to the annotation's owning set, not the active set. */
+  annotationSourcePath(id: string): string {
+    const setId = this.get(id)?.setId;
+    return setId ? this.setPath(setId) : this.pdfVaultPath;
+  }
+
   byPage(page: number): Highlight[] {
     return this.doc.highlights.filter((h) => h.page === page);
   }
