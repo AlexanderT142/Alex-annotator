@@ -47,6 +47,21 @@ import {
 } from "./ai-provider";
 import { AiJobService } from "./ai-jobs";
 import { AiCredentialStore } from "./ai-credentials";
+import { DEFAULT_SYNC_FOLDER, SyncController, normalizeSyncFolder, type SyncPauseReason } from "./sync/controller";
+import { setWorkspaceSyncHook } from "./sync/hooks";
+import { withExcludedFolder } from "./sync/vault-hiding";
+
+const PAUSE_REASONS: Record<SyncPauseReason, string> = {
+  error: "it hit an error.",
+  slow: "it was slowing Obsidian down.",
+  loop: "it kept rewriting its sync file without any edits.",
+  undo: "you undid a sync.",
+  restore: "you restored the pre-sync backup.",
+};
+
+const RESTORE_SHARING_NOTE =
+  "Sync is paused for this PDF. To keep this version only on this computer, turn sync off in settings before restarting Obsidian; " +
+  "otherwise it will be shared with your other devices after a restart or when you run “Resume sync for current PDF”.";
 
 interface LpaSettings {
   paletteColors: string[];
@@ -61,6 +76,10 @@ interface LpaSettings {
   annotationStorageFolder: string;
   /** Device-local AI connection. The key is never stored in the vault bundle. */
   ai: AiConnectionSettings;
+  /** Optional multi-device sync add-on (Beta). Off: the add-on does not run at all. */
+  syncEnabled: boolean;
+  /** Visible vault folder holding per-device sync files. */
+  syncFolder: string;
 }
 
 const DEFAULT_SETTINGS: LpaSettings = {
@@ -71,6 +90,8 @@ const DEFAULT_SETTINGS: LpaSettings = {
   annotationStorageMode: "folder",
   annotationStorageFolder: DEFAULT_ANNOTATION_FOLDER,
   ai: DEFAULT_AI_SETTINGS,
+  syncEnabled: false,
+  syncFolder: DEFAULT_SYNC_FOLDER,
 };
 
 function coerceAnnotationStorageMode(value: string): AnnotationStorageMode {
@@ -82,6 +103,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
   nativeOverlays!: NativeOverlayManager;
   bundleManager!: PdfBundleManager;
   aiJobs = new AiJobService();
+  sync: SyncController | null = null;
   private credentials(): AiCredentialStore { return new AiCredentialStore(window.localStorage); }
   private replacingCorePdfView = false;
   private nativePdfRefreshRaf: number | null = null;
@@ -89,6 +111,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.bundleManager = new PdfBundleManager(this.app);
+    this.applySyncSetting();
 
     // Configure + self-verify our bundled pdf.js worker up front so the console
     // shows the version match before any PDF is opened.
@@ -267,12 +290,154 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     );
     this.app.workspace.onLayoutReady(() => this.scheduleNativePdfRefresh());
 
+    this.registerSyncCommands();
     this.addSettingTab(new LpaSettingTab(this));
 
     console.log(`${LOG_TAG} loaded.`);
   }
 
+  /** Start or stop the optional sync add-on. Failure to start never affects annotations. */
+  applySyncSetting(): void {
+    this.stopSync();
+    if (!this.settings.syncEnabled) return;
+    try {
+      const controller = new SyncController(this.app, this.settings.syncFolder);
+      controller.start();
+      this.sync = controller;
+      setWorkspaceSyncHook(controller);
+    } catch (e) {
+      console.error(`${LOG_TAG} could not start sync`, e);
+      new Notice("PDF Annotator: sync could not start. Annotations work normally without it.");
+    }
+  }
+
+  private stopSync(): void {
+    setWorkspaceSyncHook(null);
+    try {
+      this.sync?.stop();
+    } catch (e) {
+      console.error(`${LOG_TAG} could not stop sync cleanly`, e);
+    }
+    this.sync = null;
+  }
+
+  /** Bound to the configured folder; works whether or not sync is running. */
+  excludeSyncFolderFromSearch(): "added" | "present" | null {
+    try {
+      const vault = this.app.vault as any;
+      if (typeof vault.getConfig !== "function" || typeof vault.setConfig !== "function") return null;
+      const { filters, changed } = withExcludedFolder(vault.getConfig("userIgnoreFilters"), this.settings.syncFolder);
+      if (!changed) return "present";
+      vault.setConfig("userIgnoreFilters", filters);
+      return "added";
+    } catch (e) {
+      console.error(`${LOG_TAG} could not update Excluded files`, e);
+      return null;
+    }
+  }
+
+  private async currentSyncHash(): Promise<string | null> {
+    if (!this.sync) {
+      new Notice("PDF Annotator: sync is off. Turn it on in Settings → PDF Annotator.");
+      return null;
+    }
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== "pdf") {
+      new Notice("PDF Annotator: open a PDF first.");
+      return null;
+    }
+    const bundles = await this.bundleManager.listBundles();
+    const match = bundles.find((b) => b.manifest.currentPath === file.path || b.manifest.aliases.includes(file.path));
+    if (!match || !this.sync.isAttached(match.id)) {
+      new Notice("PDF Annotator: turn on annotation mode for this PDF first.");
+      return null;
+    }
+    return match.id;
+  }
+
+  private registerSyncCommands(): void {
+    this.addCommand({
+      id: "sync-current-pdf-now",
+      name: "Sync current PDF now",
+      callback: async () => {
+        const hash = await this.currentSyncHash();
+        if (!hash || !this.sync) return;
+        const result = await this.sync.syncNow(hash);
+        if (!result) return;
+        new Notice(result.ok ? "PDF Annotator: synced." : `PDF Annotator: sync is paused for this PDF: ${PAUSE_REASONS[result.paused]} Run “Resume sync for current PDF” to start it again.`);
+      },
+    });
+    this.addCommand({
+      id: "sync-apply-pending-deletions",
+      name: "Apply pending sync deletions for current PDF",
+      callback: async () => {
+        const hash = await this.currentSyncHash();
+        if (!hash || !this.sync) return;
+        const count = await this.sync.applyPendingDeletions(hash);
+        new Notice(count > 0 ? `PDF Annotator: deleted ${count} annotations removed on another device.` : "PDF Annotator: no deletions are waiting.");
+      },
+    });
+    this.addCommand({
+      id: "sync-undo-last",
+      name: "Undo last sync for current PDF",
+      callback: async () => {
+        const hash = await this.currentSyncHash();
+        if (!hash || !this.sync) return;
+        let restored: boolean | null;
+        try {
+          restored = await this.sync.undoLastSync(hash);
+        } catch (e) {
+          console.error(`${LOG_TAG} undo last sync failed`, e);
+          new Notice("PDF Annotator: could not undo the last sync. Your current annotations were kept; details are in the developer console.");
+          return;
+        }
+        new Notice(
+          restored
+            ? "PDF Annotator: restored this PDF's annotations to before the last sync. Run it again to go further back. " + RESTORE_SHARING_NOTE
+            : "PDF Annotator: there is no earlier sync to undo for this PDF.",
+          restored ? 20000 : undefined
+        );
+      },
+    });
+    this.addCommand({
+      id: "sync-restore-pre-sync",
+      name: "Restore current PDF's annotations from before sync was turned on",
+      callback: async () => {
+        const hash = await this.currentSyncHash();
+        if (!hash || !this.sync) return;
+        let restored: boolean | null;
+        try {
+          restored = await this.sync.restorePreSync(hash);
+        } catch (e) {
+          console.error(`${LOG_TAG} restore from pre-sync backup failed`, e);
+          new Notice("PDF Annotator: could not restore the pre-sync backup. Your current annotations were kept; details are in the developer console.");
+          return;
+        }
+        new Notice(
+          restored
+            ? "PDF Annotator: restored this PDF's annotations to how they were before sync was turned on. " + RESTORE_SHARING_NOTE
+            : "PDF Annotator: no pre-sync backup was found for this PDF.",
+          restored ? 20000 : undefined
+        );
+      },
+    });
+    this.addCommand({
+      id: "sync-resume",
+      name: "Resume sync for current PDF",
+      callback: async () => {
+        const hash = await this.currentSyncHash();
+        if (!hash || !this.sync) return;
+        new Notice(
+          (await this.sync.resume(hash))
+            ? "PDF Annotator: sync resumed for this PDF."
+            : "PDF Annotator: sync could not resume for this PDF and paused again. Your annotations are unaffected; details are in the developer console."
+        );
+      },
+    });
+  }
+
   onunload(): void {
+    this.stopSync();
     AnchoredPanel.closeAll();
     if (this.nativePdfRefreshRaf !== null) {
       window.cancelAnimationFrame(this.nativePdfRefreshRaf);
@@ -367,6 +532,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       this.settings.annotationStorageFolder
     );
     this.settings.ai = normalizeAiSettings(this.settings.ai);
+    this.settings.syncEnabled = saved.syncEnabled === true;
+    this.settings.syncFolder = normalizeSyncFolder(typeof saved.syncFolder === "string" ? saved.syncFolder : DEFAULT_SYNC_FOLDER);
     this.settings.paletteColors = normalizePaletteColors(this.settings.paletteColors);
     configureSelectionPalette(this.settings.paletteColors);
     try {
@@ -466,6 +633,8 @@ class LpaSettingTab extends PluginSettingTab {
           else this.plugin.nativeOverlays.disable();
         })
       );
+
+    this.displaySync(containerEl);
 
     new Setting(containerEl).setName("Annotation colors").setHeading();
     containerEl.createEl("p", { cls: "setting-item-description", text:
@@ -627,6 +796,63 @@ class LpaSettingTab extends PluginSettingTab {
           this.plugin.nativeOverlays.refreshAnnotationPresentation();
           await this.plugin.saveSettings();
         }));
+  }
+
+  private displaySync(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Multi-device sync (Beta)").setHeading();
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Shares annotations between computers through your existing sync tool (Obsidian Sync, iCloud, Syncthing, Git…). " +
+        "Each computer writes only its own files in the folder below, so sync tools never overwrite each other. " +
+        "Turned off, the plugin behaves exactly as without sync. Sync is new: if it misbehaves it pauses itself, " +
+        "and “Undo last sync for current PDF” restores your annotations from before the last change it applied.",
+    });
+    new Setting(containerEl)
+      .setName("Sync annotations between devices")
+      .setDesc("Turn on in every computer's PDF Annotator settings. Applies to PDFs opened in annotation mode after turning it on.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
+          this.plugin.settings.syncEnabled = value;
+          await this.plugin.saveSettings();
+          this.plugin.applySyncSetting();
+          if (value) new Notice("PDF Annotator: sync is on. Reopen PDFs that are already open to start syncing them.");
+        })
+      );
+    new Setting(containerEl)
+      .setName("Sync folder")
+      .setDesc(
+        "Vault folder for sync files. It must not start with a dot: Obsidian Sync skips hidden folders. " +
+          "Use the same folder on every computer. A change takes effect the next time sync starts."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_SYNC_FOLDER)
+          .setValue(this.plugin.settings.syncFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.syncFolder = normalizeSyncFolder(value);
+            await this.plugin.saveSettings();
+          })
+      );
+    new Setting(containerEl)
+      .setName("Keep the sync folder out of search")
+      .setDesc(
+        "While sync is on, the sync folder is hidden from the file list. This button also adds it to " +
+          "Settings → Files and links → Excluded files, which keeps it out of search, the graph and the quick switcher. " +
+          "That setting does not stop syncing. Do not add the folder to Obsidian Sync's own excluded folders, which would."
+      )
+      .addButton((button) =>
+        button.setButtonText("Exclude sync folder").onClick(() => {
+          const result = this.plugin.excludeSyncFolderFromSearch();
+          new Notice(
+            result === "added"
+              ? `PDF Annotator: added “${this.plugin.settings.syncFolder}/” to Excluded files.`
+              : result === "present"
+                ? `PDF Annotator: “${this.plugin.settings.syncFolder}/” is already in Excluded files.`
+                : `PDF Annotator: add “${this.plugin.settings.syncFolder}/” in Settings → Files and links → Excluded files.`
+          );
+        })
+      );
   }
 }
 

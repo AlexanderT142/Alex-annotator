@@ -63,6 +63,8 @@ import {
 } from "./margin-card";
 import { AnnotationMarkdownCards } from "./annotation-markdown";
 import { AnnotationSetWorkspace } from "./annotation-sets";
+import { notifyWorkspaceClosed, notifyWorkspaceOpened } from "./sync/hooks";
+import { renderGuard } from "./render-guard";
 import { AnnotationSetManagerModal } from "./annotation-set-ui";
 import { AiAnnotationModal } from "./ai-ui";
 import { AiJobService } from "./ai-jobs";
@@ -341,6 +343,8 @@ export class NativePdfOverlay {
   private markdownCards = new AnnotationMarkdownCards();
   private destroyed = false;
   private store: AnnotationSetWorkspace | null = null;
+  /** Bundle hash for the optional sync add-on; null without a managed bundle. */
+  private syncHash: string | null = null;
   private storeChangeCleanup: (() => void) | null = null;
   private jobsRootPath: string | null = null;
   private pdfDoc: any | null = null;
@@ -447,6 +451,7 @@ export class NativePdfOverlay {
     let aiJobsRootPath = `${annotationPath}.ai-jobs`;
     if (this.bundleManager) {
       const binding = await this.bundleManager.prepare(this.file, data, fingerprint, pathOptions);
+      this.syncHash = binding.id;
       annotationPath = binding.annotationPath;
       fallbackPaths = binding.fallbackAnnotationPaths;
       annotationBackupPath = binding.annotationBackupPath;
@@ -470,6 +475,7 @@ export class NativePdfOverlay {
     this.jobsRootPath = aiJobsRootPath;
     this.cleanups.push(this.aiJobs.subscribe(() => this.syncToolbarState()));
     if (this.destroyed) return;
+    notifyWorkspaceOpened(this.store, this.syncHash);
     this.notifyStoreChanged();
 
     const doc = this.contentRoot.ownerDocument;
@@ -563,6 +569,7 @@ export class NativePdfOverlay {
     if (this.jobsRootPath) this.aiJobs.pauseForRoot(this.jobsRootPath);
     this.jobsRootPath = null;
     if (store) {
+      notifyWorkspaceClosed(store, this.syncHash);
       void store.release().catch((e) => console.error(`${LOG_TAG} failed to save annotations`, e));
     }
     this.releasePdf();
@@ -873,8 +880,8 @@ export class NativePdfOverlay {
     // overlapping fills never compound into a dark patch.
     const fillRects: PaintRect[] = [];
     let order = 0;
-    for (const h of marks) {
-      if (markStyleOf(h) !== "highlight") continue;
+    for (const h of marks) renderGuard(h.id, () => {
+      if (markStyleOf(h) !== "highlight") return;
       order++;
       for (const r of rectsToBase(geom, h.rects)) {
         if (r.right - r.left < 0.25 || r.bottom - r.top < 0.25) continue;
@@ -889,7 +896,7 @@ export class NativePdfOverlay {
           notes: h.note ? new Set([h.note]) : new Set<string>(),
         });
       }
-    }
+    });
     for (const r of occludePaintRects(coalescePaintRects(fillRects))) {
       const div = layer.createDiv({ cls: "lpa-highlight lpa-mark--highlight" });
       applyPctBox(div, r, geom);
@@ -904,16 +911,16 @@ export class NativePdfOverlay {
 
     // Decorative styles: one continuous stroke per visual line.
     const metrics = lineMetricsFor(pxScale);
-    for (const h of marks) {
+    for (const h of marks) renderGuard(h.id, () => {
       const st = markStyleOf(h);
-      if (st === "highlight") continue;
+      if (st === "highlight") return;
       for (const lr of mergeLineRects(rectsToBase(geom, h.rects))) {
         this.paintDecorativeLine(layer, h, st, lr, metrics, geom);
       }
-    }
+    });
 
     for (const tag of store.byPage(idx).filter((h) => annotationTypeOf(h) === "tag")) {
-      this.paintTag(noteLayer, tag);
+      renderGuard(tag.id, () => this.paintTag(noteLayer, tag));
     }
   }
 
@@ -1789,14 +1796,14 @@ export class NativePdfOverlay {
 
     const desired: RailEntry[] = [];
     for (const [idx, page] of pages) {
-      for (const h of store.byPage(idx)) {
-        if (!this.wantsMarginCard(h)) continue;
+      for (const h of store.byPage(idx)) renderGuard(h.id, () => {
+        if (!this.wantsMarginCard(h)) return;
         const anchor = this.computeNativeAnchor(h, page.box, page.geom, areaRect);
-        if (!anchor) continue;
+        if (!anchor) return;
         const railWidth = anchor.side === "left" ? naturalLeftWidth : naturalRightWidth;
-        if (railWidth < RAIL_HIDE_WIDTH) continue;
+        if (railWidth < RAIL_HIDE_WIDTH) return;
         desired.push({ h, anchor });
-      }
+      });
     }
 
     this.reconcileRailCards(desired);
@@ -1919,26 +1926,40 @@ export class NativePdfOverlay {
 
     for (const card of Array.from(margins.querySelectorAll<HTMLElement>(".lpa-native-rail > .lpa-margin-card"))) {
       const id = card.dataset.hlId ?? "";
-      const entry = wanted.get(id);
-      const holdsFocus = !!focused && card.contains(focused);
-      if (!entry) {
-        // Keep a card alive while the user is typing in it, even if its page
-        // scrolled out of view; it goes away on the next pass after blur.
-        if (!holdsFocus || (this.getRenderAnnotationsAsMarkdown() && !this.store?.doc.highlights.some((h) => h.id === id))) {
-          this.markdownCards.release(this.leaf.view, card);
-          card.remove();
+      renderGuard(id, () => {
+        const entry = wanted.get(id);
+        const holdsFocus = !!focused && card.contains(focused);
+        if (!entry) {
+          // Keep a card alive while the user is typing in it, even if its page
+          // scrolled out of view; it goes away on the next pass after blur.
+          if (!holdsFocus || (this.getRenderAnnotationsAsMarkdown() && !this.store?.doc.highlights.some((h) => h.id === id))) {
+            this.markdownCards.release(this.leaf.view, card);
+            card.remove();
+          }
+          return;
         }
-        continue;
-      }
-      const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
-      // Re-parenting a focused element would blur it mid-edit; defer the move.
-      if (rail && card.parentElement !== rail && !holdsFocus) rail.appendChild(card);
-      this.syncCardContent(card, entry.h);
-      wanted.delete(id);
+        // Marked handled first, so a failed refresh never creates a duplicate card.
+        wanted.delete(id);
+        const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
+        // Re-parenting a focused element would blur it mid-edit; defer the move.
+        if (rail && card.parentElement !== rail && !holdsFocus) rail.appendChild(card);
+        this.syncCardContent(card, entry.h);
+      });
     }
     for (const entry of wanted.values()) {
       const rail = entry.anchor.side === "left" ? this.leftRailEl : this.rightRailEl;
-      if (rail) this.createRailCard(rail, entry.h, entry.anchor.side);
+      if (!rail) continue;
+      renderGuard(entry.h.id, () => {
+        const before = rail.lastElementChild;
+        try {
+          this.createRailCard(rail, entry.h, entry.anchor.side);
+        } catch (error) {
+          // Never leave a half-built card behind; it would fail again on every pass.
+          const partial = rail.lastElementChild;
+          if (partial && partial !== before) partial.remove();
+          throw error;
+        }
+      });
     }
   }
 
@@ -2417,7 +2438,7 @@ export class NativePdfOverlay {
       listEl.createDiv({ cls: "lpa-native-roll-empty", text: "No matching annotations." });
       return;
     }
-    for (const h of filtered) {
+    for (const h of filtered) renderGuard(h.id, () => {
       const item = listEl.createDiv({ cls: "lpa-native-roll-item" });
       item.style.setProperty(
         "--lpa-accent",
@@ -2435,7 +2456,7 @@ export class NativePdfOverlay {
       const secondary = rollSecondaryText(h);
       if (secondary) item.createDiv({ cls: "lpa-native-roll-source", text: secondary });
       item.onclick = () => void this.revealAnnotation(h.id);
-    }
+    });
   }
 
   private async revealAnnotation(id: string): Promise<void> {

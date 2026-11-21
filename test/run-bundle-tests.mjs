@@ -50,6 +50,10 @@ const tests = [
     entry: "test/reliability-smoke.ts",
     alias: { obsidian: path.join(root, "test/obsidian-stub.ts") },
   },
+  { entry: "test/sync-merge-smoke.ts" },
+  { entry: "test/sync-scenarios-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
+  { entry: "test/sync-sim-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
+  { entry: "test/sync-controller-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
 ];
 
 try {

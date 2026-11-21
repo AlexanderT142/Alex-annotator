@@ -313,6 +313,110 @@ export class AnnotationSetWorkspace {
     return () => this.listeners.delete(listener);
   }
 
+  // ---- Optional sync add-on surface (src/sync). Purely additive: nothing in
+  // the core calls these, and they do not change any existing behavior. ----
+
+  /** Detached copy of every set (archived included) and every highlight. */
+  syncSnapshot(): { sets: AnnotationSetMeta[]; highlights: Highlight[] } {
+    const sets = this.index.sets.map((set) => ({ ...set }));
+    const highlights: Highlight[] = [];
+    for (const [setId, store] of this.stores) {
+      for (const h of store.doc.highlights) highlights.push({ ...JSON.parse(JSON.stringify(h)), setId });
+    }
+    return { sets, highlights };
+  }
+
+  /**
+   * Apply changes merged from other devices. All in-memory changes happen
+   * synchronously before the returned promise's first await, so a caller can
+   * take syncSnapshot() immediately afterwards. Never changes the active set.
+   */
+  async applySyncedChanges(changes: {
+    sets: Array<{ id: string; name: string; kind: AnnotationSetKind; accent: string; archived: boolean; created: string }>;
+    upserts: Highlight[];
+    removals: string[];
+  }): Promise<void> {
+    // Validate the whole change first; reject it without touching anything.
+    const incomingSetIds = new Set<string>();
+    for (const change of changes.sets) {
+      if (!change || typeof change.id !== "string" || !/^[a-zA-Z0-9_-]+$/.test(change.id) || typeof change.name !== "string") {
+        throw new Error("Rejected synced change: invalid annotation set.");
+      }
+      incomingSetIds.add(change.id);
+    }
+    const upsertIds = new Set<string>();
+    for (const h of changes.upserts) {
+      if (!h || typeof h.id !== "string" || !h.id || upsertIds.has(h.id)) throw new Error("Rejected synced change: invalid annotation id.");
+      if (typeof h.setId !== "string" || (!this.stores.has(h.setId) && !incomingSetIds.has(h.setId))) {
+        throw new Error("Rejected synced change: annotation set is missing.");
+      }
+      if (!Array.isArray(h.rects) || !Number.isInteger(h.page)) throw new Error("Rejected synced change: invalid annotation.");
+      upsertIds.add(h.id);
+    }
+    if (!changes.removals.every((id) => typeof id === "string")) throw new Error("Rejected synced change: invalid deletion.");
+
+    const newSets: AnnotationSetMeta[] = [];
+    let indexChanged = false;
+    const now = new Date().toISOString();
+    for (const change of changes.sets) {
+      let meta = this.index.sets.find((set) => set.id === change.id);
+      if (!meta) {
+        meta = { id: change.id, name: cleanName(change.name), kind: change.kind, accent: change.accent, created: change.created || now, updated: now };
+        if (change.archived) meta.archived = true;
+        this.index.sets.push(meta);
+        if (!meta.archived) this.index.visibleSetIds.push(meta.id);
+        this.stores.set(meta.id, this.makeStore(meta));
+        newSets.push(meta);
+        indexChanged = true;
+        continue;
+      }
+      const wasArchived = !!meta.archived;
+      const othersActive = this.index.sets.some((set) => set.id !== meta!.id && !set.archived);
+      const archived = change.archived && (wasArchived || othersActive); // never archive the last set
+      if (meta.name !== cleanName(change.name)) {
+        meta.name = cleanName(change.name);
+        this.stores.get(meta.id)?.setPdfPath(this.pdfVaultPath, `${this.pdfBasename} — ${meta.name}`);
+      }
+      meta.kind = change.kind;
+      meta.accent = change.accent;
+      if (archived) meta.archived = true;
+      else delete meta.archived;
+      meta.updated = now;
+      if (archived && !wasArchived) {
+        this.index.visibleSetIds = this.index.visibleSetIds.filter((id) => id !== meta!.id);
+        if (this.index.activeSetId === meta.id) {
+          const next = this.index.sets.find((set) => !set.archived)!;
+          this.index.activeSetId = next.id;
+          if (!this.index.visibleSetIds.includes(next.id)) this.index.visibleSetIds.push(next.id);
+        }
+      } else if (!archived && wasArchived && !this.index.visibleSetIds.includes(meta.id)) {
+        this.index.visibleSetIds.push(meta.id);
+      }
+      indexChanged = true;
+    }
+
+    for (const id of changes.removals) this.ownerOf(id)?.remove(id);
+    for (const incoming of changes.upserts) {
+      const target = this.stores.get(incoming.setId!)!;
+      const owner = this.ownerOf(incoming.id);
+      const next: Highlight = JSON.parse(JSON.stringify(incoming));
+      if (owner && owner !== target) owner.remove(incoming.id);
+      const existing = owner === target ? target.get(incoming.id) : undefined;
+      if (existing) {
+        const patch: Record<string, unknown> = {};
+        for (const key of Object.keys(existing)) if (!(key in next)) patch[key] = undefined;
+        Object.assign(patch, next);
+        target.update(incoming.id, patch as Partial<Highlight>);
+      } else {
+        target.add(next);
+      }
+    }
+    this.emit();
+
+    for (const meta of newSets) await this.writeEmptySet(meta);
+    if (indexChanged) await this.saveIndex();
+  }
+
   private async load(): Promise<void> {
     const { adapter, indexPath } = this.options;
     let loaded: AnnotationSetIndex | null = null;

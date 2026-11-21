@@ -41,6 +41,8 @@ import {
 } from "./margin-card";
 import { AnnotationMarkdownCards } from "./annotation-markdown";
 import { AnnotationSetWorkspace } from "./annotation-sets";
+import { notifyWorkspaceClosed, notifyWorkspaceOpened } from "./sync/hooks";
+import { renderGuard } from "./render-guard";
 import { AnnotationSetManagerModal } from "./annotation-set-ui";
 import { AiAnnotationModal } from "./ai-ui";
 import { AiJobService } from "./ai-jobs";
@@ -164,6 +166,8 @@ export class PdfAnnotatorView extends FileView {
   private pdfDoc: any | null = null;
   private pdfWorker: any | null = null;
   private store: AnnotationSetWorkspace | null = null;
+  /** Bundle hash for the optional sync add-on; null without a managed bundle. */
+  private syncHash: string | null = null;
   private storeChangeCleanup: (() => void) | null = null;
   private jobsRootPath: string | null = null;
   private currentColorSlot = 0;
@@ -581,9 +585,11 @@ export class PdfAnnotatorView extends FileView {
     let annotationSetsRootPath = `${annotationPath}.sets`;
     let annotationSetsIndexPath = `${annotationSetsRootPath}/index.json`;
     let aiJobsRootPath = `${annotationPath}.ai-jobs`;
+    this.syncHash = null;
     if (this.bundleManager) {
       try {
         const binding = await this.bundleManager.prepare(file, data, fingerprint, pathOptions);
+        this.syncHash = binding.id;
         annotationPath = binding.annotationPath;
         fallbackPaths = binding.fallbackAnnotationPaths;
         annotationBackupPath = binding.annotationBackupPath;
@@ -611,6 +617,7 @@ export class PdfAnnotatorView extends FileView {
     });
     this.storeChangeCleanup = this.store.onChange(() => this.onAnnotationSetsChanged());
     for (const message of this.store.recoveryMessages) new Notice(message);
+    notifyWorkspaceOpened(this.store, this.syncHash);
     this.jobsRootPath = aiJobsRootPath;
     this.updateAnnotationSetButton();
     this.updateAiButton();
@@ -784,18 +791,18 @@ export class PdfAnnotatorView extends FileView {
     if (this.hoverHighlightId && !ids.has(this.hoverHighlightId)) this.hoverHighlightId = null;
     this.annotationCountEl.setText(`${annotations.length} ${annotations.length === 1 ? "annotation" : "annotations"}`);
 
-    for (const h of annotations) {
+    for (const h of annotations) renderGuard(h.id, () => {
       const type = annotationTypeOf(h);
-      if (type === "highlight" && !highlightHasMarginCard(h)) continue;
+      if (type === "highlight" && !highlightHasMarginCard(h)) return;
       const anchor = this.computeAnnotationAnchor(h);
-      if (!anchor) continue;
+      if (!anchor) return;
       const pinned = !!h.isPinned;
-      if (type === "tag" && !pinned && this.hoverHighlightId !== h.id && this.activeHighlightId !== h.id) continue;
+      if (type === "tag" && !pinned && this.hoverHighlightId !== h.id && this.activeHighlightId !== h.id) return;
 
       const margin = anchor.side === "left" ? this.leftMarginEl : this.rightMarginEl;
       const card = this.createMarginCard(margin, h, anchor.side);
       card.setCssProps({ top: `${Math.round(anchor.idealY)}px` });
-    }
+    });
     this.renderAnnotationRollList();
     this.syncHighlightBindingState();
     this.scheduleMarginLayout();
@@ -834,7 +841,7 @@ export class PdfAnnotatorView extends FileView {
       return;
     }
 
-    for (const h of filtered) this.createRollItem(h);
+    for (const h of filtered) renderGuard(h.id, () => this.createRollItem(h));
     this.syncHighlightBindingState();
   }
 
@@ -1302,8 +1309,8 @@ export class PdfAnnotatorView extends FileView {
     // overlapping fills never compound into a dark muddy patch. ----
     const fillRects: HighlightPaintRect[] = [];
     let order = 0;
-    for (const h of marks) {
-      if (markStyleOf(h) !== "highlight") continue;
+    for (const h of marks) renderGuard(h.id, () => {
+      if (markStyleOf(h) !== "highlight") return;
       order++;
       for (const r of this.rectToViewport(vp, h.rects)) {
         if (r.right - r.left < 0.5 || r.bottom - r.top < 0.5) continue;
@@ -1314,7 +1321,7 @@ export class PdfAnnotatorView extends FileView {
           notes: h.note ? new Set([h.note]) : new Set(),
         });
       }
-    }
+    });
     for (const r of occludeHighlightRects(coalesceHighlightRects(fillRects))) {
       const div = pv.hlLayer.createDiv({ cls: "lpa-highlight lpa-mark--highlight" });
       div.setCssProps({
@@ -1338,14 +1345,14 @@ export class PdfAnnotatorView extends FileView {
     // ---- Decorative styles (underline / dashed / dotted / strike / box /
     // comment): rendered per-mark, one continuous stroke per visual line. ----
     const metrics = this.lineMetrics();
-    for (const h of marks) {
+    for (const h of marks) renderGuard(h.id, () => {
       const st = markStyleOf(h);
-      if (st === "highlight") continue;
+      if (st === "highlight") return;
       const lines = mergeLineRects(this.rectToViewport(vp, h.rects));
       for (const lr of lines) {
         this.paintDecorativeLine(pv.hlLayer, h, st, lr, metrics);
       }
-    }
+    });
     this.syncActiveRunShape();
   }
 
@@ -1443,8 +1450,8 @@ export class PdfAnnotatorView extends FileView {
     pv.noteLayer.empty();
     if (!this.store || !pv.page) return;
     const tags = this.store.byPage(pv.index).filter((h) => annotationTypeOf(h) === "tag");
-    for (const tag of tags) {
-      if (!Number.isFinite(tag.tagX) || !Number.isFinite(tag.tagY)) continue;
+    for (const tag of tags) renderGuard(tag.id, () => {
+      if (!Number.isFinite(tag.tagX) || !Number.isFinite(tag.tagY)) return;
       const x = clamp(0, tag.tagX ?? 0, 100);
       const y = clamp(0, tag.tagY ?? 0, 100);
       const el = pv.noteLayer.createDiv({ cls: "lpa-page-tag" });
@@ -1474,7 +1481,7 @@ export class PdfAnnotatorView extends FileView {
       this.tagGesture.bind(el, pv.noteLayer, tag,
         (geometry) => this.store?.update(tag.id, geometry),
         () => this.scheduleMarginLayout());
-    }
+    });
     this.scheduleMarginLayout();
   }
 
@@ -2656,6 +2663,7 @@ export class PdfAnnotatorView extends FileView {
     this.storeChangeCleanup = null;
     const releasedStore = this.store;
     this.store = null;
+    if (releasedStore) notifyWorkspaceClosed(releasedStore, this.syncHash);
     if (releasedStore) void releasedStore.release().catch((error) => console.error(`${LOG_TAG} failed to save annotations`, error));
     if (this.jobsRootPath) this.aiJobs.pauseForRoot(this.jobsRootPath);
     this.jobsRootPath = null;
