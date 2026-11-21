@@ -182,6 +182,10 @@ export class SyncController implements WorkspaceSyncHook {
   }
 
   /** Commands target the PDF whose bundle hash the caller resolved. */
+  deviceId(): string {
+    return this.identity.get();
+  }
+
   isAttached(hash: string): boolean {
     return this.docs.has(hash);
   }

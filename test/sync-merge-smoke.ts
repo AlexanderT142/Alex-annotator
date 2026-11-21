@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mergeShards, stitch } from "../src/sync/merge";
+import { conflictLocalTime, conflictSourceLabel, hasSyncConflict, splitSyncConflicts } from "../src/sync/conflict-view";
 import { parseShard, serializeShard, IncompleteShardError } from "../src/sync/shard";
 import { legacyRecord } from "../src/sync/records";
 import type { ShardPayload, SyncHighlightRecord, SyncSetRecord } from "../src/sync/types";
@@ -150,4 +151,27 @@ assert.deepEqual(nextVV([{ a: 1, b: 2 }, { a: 3 }], "c"), { a: 3, b: 2, c: 1 });
   assert.deepEqual(parseShard(serializeShard(bad), HASH).records.map((r) => r.id), ["ok"]);
 }
 
-console.log("sync merge smoke: LWW, clocks, version vectors, stitching, deletion, order independence, legacy export and shard format passed");
+// ---- conflict display parser reads exactly what stitch() writes (display only) ----
+{
+  const ts = Date.UTC(2026, 10, 21, 6, 1);
+  const note = stitch([
+    { text: "newest **text**", by: "dev_a", ts: ts + 1000 },
+    { text: "kept one", by: "dev_b", ts },
+    { text: "kept two\n\nwith a paragraph", by: "dev_c", ts },
+  ]);
+  const split = splitSyncConflicts(note)!;
+  assert.equal(split.main, "newest **text**");
+  assert.deepEqual(split.kept.map((k) => [k.device, k.when, k.text]), [
+    ["dev_b", "2026-11-21 06:01 UTC", "kept one"],
+    ["dev_c", "2026-11-21 06:01 UTC", "kept two\n\nwith a paragraph"],
+  ]);
+  assert.equal(splitSyncConflicts("plain note"), null);
+  assert.equal(hasSyncConflict("mentions [Sync conflict kept · inline] only"), false);
+  assert.equal(conflictSourceLabel("dev_b", null), "Saved version");
+  assert.equal(conflictSourceLabel("dev_b", "dev_b"), "This computer");
+  assert.equal(conflictSourceLabel("dev_b", "dev_a"), "Other device");
+  assert.notEqual(conflictLocalTime("2026-11-21 06:01 UTC"), "2026-11-21 06:01 UTC");
+  assert.equal(conflictLocalTime("unknown time"), "unknown time");
+}
+
+console.log("sync merge smoke: LWW, clocks, version vectors, stitching, conflict display parsing, deletion, order independence, legacy export and shard format passed");

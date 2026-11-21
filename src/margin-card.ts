@@ -1,3 +1,4 @@
+import { syncConflictTag } from "./sync/conflict-view";
 /** Card navigation shortcuts must not steal selection or control interactions.
  * Duck typing also works for elements in Obsidian pop-out windows. */
 export function isMarginCardInteractiveTarget(target: EventTarget | null): boolean {
@@ -137,4 +138,9 @@ export function syncMarginCardPresentation(card: HTMLElement): void {
   card.style.setProperty("--lpa-card-folded-height", `${foldedHeight}px`);
   card.dataset.foldedHeight = String(foldedHeight);
   card.classList.toggle("is-folded", units > 64);
+  try {
+    syncConflictTag(card, note);
+  } catch {
+    // Display hint only; never let it affect the card.
+  }
 }

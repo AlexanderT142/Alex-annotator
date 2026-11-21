@@ -1,4 +1,28 @@
 import { App, Component, MarkdownRenderer } from "obsidian";
+import { conflictLocalTime, conflictSourceLabel, splitSyncConflicts } from "./sync/conflict-view";
+import { currentSyncDeviceId } from "./sync/hooks";
+
+/** Render a note; kept sync-conflict versions become small callouts instead of a raw marker. */
+export async function renderAnnotationNoteMarkdown(
+  app: App, container: HTMLElement, markdown: string, sourcePath: string, component: Component
+): Promise<void> {
+  let split: ReturnType<typeof splitSyncConflicts> = null;
+  try { split = splitSyncConflicts(markdown); } catch { split = null; }
+  if (!split) return renderAnnotationMarkdown(app, container, markdown, sourcePath, component);
+  container.empty();
+  const device = currentSyncDeviceId();
+  await renderAnnotationMarkdown(app, container.createDiv({ cls: "lpa-sync-conflict-main" }), split.main, sourcePath, component);
+  for (const kept of split.kept) {
+    const box = container.createDiv({ cls: "lpa-sync-conflict" });
+    box.createDiv({
+      cls: "lpa-sync-conflict-pill",
+      text: `${conflictSourceLabel(kept.device, device)} · ${conflictLocalTime(kept.when)}`,
+      attr: { title: `Kept by sync from ${kept.device} (${kept.when})` },
+    });
+    await renderAnnotationMarkdown(app, box.createDiv({ cls: "lpa-sync-conflict-body" }), kept.text, sourcePath, component);
+    box.createDiv({ cls: "lpa-sync-conflict-hint", text: "Edit note to resolve" });
+  }
+}
 
 export async function renderAnnotationMarkdown(
   app: App, container: HTMLElement, markdown: string, sourcePath: string, component: Component
@@ -118,7 +142,7 @@ export class AnnotationMarkdownEditor extends Component {
     this.preview.hidden = this.editing;
     if (this.editing || this.disposed) return;
     const markdown = this.textarea.value;
-    const key = JSON.stringify([sourcePath, markdown]);
+    const key = JSON.stringify([sourcePath, markdown, currentSyncDeviceId()]);
     if (key === this.renderedKey) return;
     this.renderedKey = key;
     const generation = ++this.generation;
@@ -129,7 +153,7 @@ export class AnnotationMarkdownEditor extends Component {
     // a newer preview, while postprocessors can measure connected elements.
     this.preview.empty();
     const target = this.preview.createDiv({ cls: "lpa-annotation-markdown-content" });
-    void renderAnnotationMarkdown(this.app, target, markdown, sourcePath, owner)
+    void renderAnnotationNoteMarkdown(this.app, target, markdown, sourcePath, owner)
       .catch((error) => {
         if (!this.disposed && generation === this.generation) {
           target.textContent = markdown;

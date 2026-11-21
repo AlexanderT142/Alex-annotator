@@ -61,8 +61,7 @@ const PAUSE_REASONS: Record<SyncPauseReason, string> = {
 };
 
 const RESTORE_SHARING_NOTE =
-  "Sync is paused for this PDF. To keep this version only on this computer, turn sync off in settings before restarting Obsidian; " +
-  "otherwise it will be shared with your other devices after a restart or when you run “Resume sync for current PDF”.";
+  "Sync is paused for this PDF; to keep this version only on this computer, turn sync off in settings before restarting Obsidian or resuming sync.";
 
 interface LpaSettings {
   paletteColors: string[];
@@ -337,6 +336,17 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     }
   }
 
+  /** True when the configured sync folder is already in Excluded files; null if unknown. */
+  isSyncFolderExcluded(): boolean | null {
+    try {
+      const vault = this.app.vault as any;
+      if (typeof vault.getConfig !== "function") return null;
+      return !withExcludedFolder(vault.getConfig("userIgnoreFilters"), this.settings.syncFolder).changed;
+    } catch {
+      return null;
+    }
+  }
+
   private async currentSyncHash(): Promise<string | null> {
     if (!this.sync) {
       new Notice("PDF Annotator: sync is off. Turn it on in Settings → PDF Annotator.");
@@ -394,7 +404,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
         }
         new Notice(
           restored
-            ? "PDF Annotator: restored this PDF's annotations to before the last sync. Run it again to go further back. " + RESTORE_SHARING_NOTE
+            ? "PDF Annotator: restored this PDF to before the last sync (run again to go further back). " + RESTORE_SHARING_NOTE
             : "PDF Annotator: there is no earlier sync to undo for this PDF.",
           restored ? 20000 : undefined
         );
@@ -402,7 +412,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     });
     this.addCommand({
       id: "sync-restore-pre-sync",
-      name: "Restore current PDF's annotations from before sync was turned on",
+      name: "Restore pre-sync backup for current PDF",
       callback: async () => {
         const hash = await this.currentSyncHash();
         if (!hash || !this.sync) return;
@@ -419,7 +429,7 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
         }
         new Notice(
           restored
-            ? "PDF Annotator: restored this PDF's annotations to how they were before sync was turned on. " + RESTORE_SHARING_NOTE
+            ? "PDF Annotator: restored this PDF's pre-sync backup. " + RESTORE_SHARING_NOTE
             : "PDF Annotator: no pre-sync backup was found for this PDF.",
           restored ? 20000 : undefined
         );
@@ -665,12 +675,12 @@ class LpaSettingTab extends PluginSettingTab {
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text:
-        "Paste a provider key, choose its provider when the key prefix is ambiguous, and choose a model. PDF Annotator owns the request format and endpoint. Keys stay in Obsidian's device-local app storage outside the vault, but that storage is not encrypted.",
+        "Connect an AI provider to add AI notes to your PDFs. Keys are stored on this device, outside your vault, and are not encrypted.",
     });
 
     new Setting(containerEl)
       .setName("AI provider")
-      .setDesc("The plugin maintains the protocol and endpoint for this provider.")
+      .setDesc("The service that writes AI notes.")
       .addDropdown((dropdown) => {
         for (const preset of AI_PROVIDER_PRESETS) dropdown.addOption(preset.id, preset.name);
         dropdown.setValue(this.plugin.settings.ai.provider).onChange(async (value) => {
@@ -681,7 +691,7 @@ class LpaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("API key")
-      .setDesc("Saved in Obsidian's device-local app storage, outside the vault. It is never written to plugin data, a PDF bundle, annotation, job checkpoint, or log.")
+      .setDesc("Stored only on this device. Never saved in your vault, notes, or logs.")
       .addText((text) => {
         text.inputEl.type = "password";
         text.inputEl.autocomplete = "off";
@@ -704,7 +714,7 @@ class LpaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Model")
-      .setDesc("Choose from up to four recent text models, or enter a model ID. Refreshing the list discovers new releases without a plugin update.")
+      .setDesc("Pick one of the provider's recent models, or type a model ID.")
       .addText((text) =>
         text.setPlaceholder("model-id").setValue(this.plugin.settings.ai.model).onChange(async (value) => {
           this.plugin.settings.ai.model = value.trim();
@@ -712,7 +722,7 @@ class LpaSettingTab extends PluginSettingTab {
         })
       )
       .addButton((button) =>
-        button.setButtonText("Choose current model").onClick(async () => {
+        button.setButtonText("Choose model").onClick(async () => {
           button.setDisabled(true).setButtonText("Loading…");
           try {
             const models = await listAiModels(this.plugin.settings.ai);
@@ -724,7 +734,7 @@ class LpaSettingTab extends PluginSettingTab {
           } catch (error: any) {
             new Notice(`Could not load models — ${error?.message ?? error}`);
           } finally {
-            button.setDisabled(false).setButtonText("Choose current model");
+            button.setDisabled(false).setButtonText("Choose model");
           }
         })
       );
@@ -745,7 +755,7 @@ class LpaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Connection check")
-      .setDesc("Makes one small real request to the selected provider and validates structured annotation JSON.")
+      .setDesc("Sends one small test request to check your key and model.")
       .addButton((button) =>
         button.setButtonText("Test key and model").onClick(async () => {
           button.setDisabled(true).setButtonText("Testing…");
@@ -755,7 +765,7 @@ class LpaSettingTab extends PluginSettingTab {
               "Create one short explanatory annotation for the test sentence.",
               [{ pageNumber: 1, text: "This is a connection test sentence." }]
             );
-            new Notice("PDF Annotator: AI key, endpoint, model, and JSON response are working.");
+            new Notice("PDF Annotator: your AI key and model are working.");
           } catch (error: any) {
             console.error(`${LOG_TAG} AI connection check failed (key redacted)`, error?.message ?? error);
             new Notice(`PDF Annotator: AI connection failed — ${error?.message ?? error}`);
@@ -765,12 +775,11 @@ class LpaSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl).setName("PDF viewer").setHeading();
+
     new Setting(containerEl)
       .setName("Make this the default PDF viewer")
-      .setDesc(
-        "When enabled, ordinary .pdf clicks are redirected into this annotator. " +
-          "This uses Obsidian's public file-open event and does not patch internal PDF-viewer state."
-      )
+      .setDesc("Open PDFs in PDF Annotator's own viewer when you click them, instead of Obsidian's built-in viewer.")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.registerAsDefaultPdfHandler).onChange(async (v) => {
           this.plugin.settings.registerAsDefaultPdfHandler = v;
@@ -782,7 +791,7 @@ class LpaSettingTab extends PluginSettingTab {
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text:
-        "The command “Open current PDF in annotator” remains available as a stable custom-view fallback.",
+        "You can always open the current PDF there with the command “Open current PDF in annotator”.",
     });
 
     new Setting(containerEl).setName("Rendering").setHeading();
@@ -806,29 +815,24 @@ class LpaSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Multi-device sync (Beta)").setHeading();
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text:
-        "Shares annotations between computers through your existing sync tool (Obsidian Sync, iCloud, Syncthing, Git…). " +
-        "Each computer writes only its own files in the folder below, so sync tools never overwrite each other. " +
-        "Turned off, the plugin behaves exactly as without sync. Sync is new: if it misbehaves it pauses itself, " +
-        "and “Undo last sync for current PDF” restores your annotations from before the last change it applied.",
+      text: "Sync annotations across desktop computers using Obsidian Sync, iCloud, Syncthing, Git, or Dropbox. Off by default.",
     });
+    const syncOn = this.plugin.settings.syncEnabled;
     new Setting(containerEl)
       .setName("Sync annotations between devices")
-      .setDesc("Turn on in every computer's PDF Annotator settings. Applies to PDFs opened in annotation mode after turning it on.")
+      .setDesc("Turn it on in each computer's settings. PDFs that are already open start syncing after you reopen them.")
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.syncEnabled).onChange(async (value) => {
+        toggle.setValue(syncOn).onChange(async (value) => {
           this.plugin.settings.syncEnabled = value;
           await this.plugin.saveSettings();
           this.plugin.applySyncSetting();
           if (value) new Notice("PDF Annotator: sync is on. Reopen PDFs that are already open to start syncing them.");
+          this.display();
         })
       );
     new Setting(containerEl)
       .setName("Sync folder")
-      .setDesc(
-        "Vault folder for sync files. It must not start with a dot: Obsidian Sync skips hidden folders. " +
-          "Use the same folder on every computer. A change takes effect the next time sync starts."
-      )
+      .setDesc("Use the same folder on every computer, and set it before turning sync on. It must not start with a dot. Changes apply the next time sync starts.")
       .addText((text) =>
         text
           .setPlaceholder(DEFAULT_SYNC_FOLDER)
@@ -838,15 +842,13 @@ class LpaSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+    if (!syncOn) return;
+    const excluded = this.plugin.isSyncFolderExcluded() === true;
     new Setting(containerEl)
       .setName("Keep the sync folder out of search")
-      .setDesc(
-        "While sync is on, the sync folder is hidden from the file list. This button also adds it to " +
-          "Settings → Files and links → Excluded files, which keeps it out of search and the graph and ranks it lower in the quick switcher. " +
-          "That setting does not stop syncing. Do not add the folder to Obsidian Sync's own excluded folders, which would."
-      )
-      .addButton((button) =>
-        button.setButtonText("Exclude sync folder").onClick(() => {
+      .setDesc("Adds the folder to Files and links → Excluded files: hidden from search and the graph, and ranked lower in the quick switcher.")
+      .addButton((button) => {
+        button.setButtonText(excluded ? "Excluded ✓" : "Exclude sync folder").onClick(() => {
           const result = this.plugin.excludeSyncFolderFromSearch();
           new Notice(
             result === "added"
@@ -855,8 +857,13 @@ class LpaSettingTab extends PluginSettingTab {
                 ? `PDF Annotator: “${this.plugin.settings.syncFolder}/” is already in Excluded files.`
                 : `PDF Annotator: add “${this.plugin.settings.syncFolder}/” in Settings → Files and links → Excluded files.`
           );
-        })
-      );
+          this.display();
+        });
+        if (excluded) button.buttonEl.addClass("lpa-settings-done");
+      });
+    const note = containerEl.createEl("p", { cls: "setting-item-description lpa-settings-note" });
+    note.createEl("strong", { text: "Note: " });
+    note.appendText("Do not add this folder to Obsidian Sync's own “Excluded folders”, or syncing will stop.");
   }
 }
 

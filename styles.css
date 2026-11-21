@@ -1931,3 +1931,55 @@ button.lpa-set-visibility:focus-visible {
   pointer-events: auto;
   opacity: 1;
 }
+
+/* ---- Sync: conflict presentation and settings (display only) ---------------- */
+.lpa-sync-conflict-tag {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 4px;
+  padding: 0 5px;
+  border-radius: var(--radius-s);
+  font-size: 0.78em;
+  line-height: 1.5;
+  color: var(--text-warning, var(--color-orange));
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+.lpa-margin-card .lpa-sync-conflict {
+  margin: 6px 0 0;
+  padding: 5px 7px 6px;
+  border-left: 2px solid var(--color-orange);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+/* Markdown mode shows the callout, so the header line would only repeat it. */
+.lpa-margin-card:has(.lpa-sync-conflict) .lpa-sync-conflict-tag { display: none; }
+.lpa-margin-card .lpa-sync-conflict-pill {
+  display: inline-block;
+  margin-bottom: 3px;
+  padding: 0 5px;
+  border-radius: var(--radius-s);
+  font-size: 0.78em;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.lpa-margin-card .lpa-sync-conflict-body > :first-child { margin-top: 0; }
+.lpa-margin-card .lpa-sync-conflict-body > :last-child { margin-bottom: 0; }
+.lpa-margin-card .lpa-sync-conflict-body :is(p, ul, ol, blockquote, pre) { margin: 0.3em 0; }
+.lpa-margin-card .lpa-sync-conflict-hint {
+  margin-top: 4px;
+  font-size: 0.78em;
+  color: var(--text-faint);
+}
+.lpa-margin-card .lpa-sync-conflict-main:empty { display: none; }
+.lpa-settings-note {
+  margin-top: 4px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--color-orange);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  background: var(--background-secondary);
+}
+.lpa-settings-done {
+  color: var(--text-success, var(--color-green));
+}

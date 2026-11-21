@@ -8,12 +8,23 @@ import type { AnnotationSetWorkspace } from "../annotation-sets";
 export interface WorkspaceSyncHook {
   attach(workspace: AnnotationSetWorkspace, docHash: string): void;
   detach(workspace: AnnotationSetWorkspace, docHash: string): void;
+  /** This computer's sync id, used only to label kept conflict versions. */
+  deviceId?(): string;
 }
 
 let hook: WorkspaceSyncHook | null = null;
 
 export function setWorkspaceSyncHook(next: WorkspaceSyncHook | null): void {
   hook = next;
+}
+
+/** This computer's sync id while sync is running, otherwise null. */
+export function currentSyncDeviceId(): string | null {
+  try {
+    return hook?.deviceId?.() ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function notifyWorkspaceOpened(workspace: AnnotationSetWorkspace, docHash: string | null | undefined): void {
