@@ -167,22 +167,6 @@
   min-width: 0;
   flex-wrap: wrap;
 }
-.lpa-ai-modal select {
-  max-width: min(260px, 48vw);
-}
-.lpa-ai-prompt-setting {
-  display: block;
-}
-.lpa-ai-prompt-setting .setting-item-control {
-  width: 100%;
-  margin-top: 10px;
-}
-.lpa-ai-modal .lpa-ai-prompt {
-  min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-}
 .lpa-ai-jobs-heading {
   margin-block: 18px 6px;
   font-size: 14px;
@@ -202,25 +186,6 @@
   line-height: 1.4;
   text-align: center;
   font-variant-numeric: tabular-nums;
-}
-button.lpa-set-visibility {
-  padding: 6px;
-  width: 32px;
-  height: 32px;
-  color: var(--text-muted);
-  background: transparent;
-  box-shadow: none;
-}
-button.lpa-set-visibility[aria-pressed="true"] {
-  color: #8b5cf6;
-  background: rgba(139, 92, 246, 0.12);
-}
-button.lpa-set-visibility:hover {
-  background: var(--background-modifier-hover);
-}
-button.lpa-set-visibility:focus-visible {
-  outline: 2px solid #8b5cf6;
-  outline-offset: 2px;
 }
 .lpa-set-chip {
   display: inline-flex;
@@ -1982,4 +1947,166 @@ button.lpa-set-visibility:focus-visible {
 }
 .lpa-settings-done {
   color: var(--text-success, var(--color-green));
+}
+
+/* ---- Toolbar panels: flat rows instead of stacked cards ------------------- */
+.lpa-toolbar-panel .setting-item {
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.lpa-toolbar-panel .setting-item:first-child { border-top: 0; }
+
+/* ---- Annotation sets: compact layer list ----------------------------------- */
+.lpa-set-list { margin: 4px 0 0; }
+.lpa-set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.lpa-set-row:last-child { border-bottom: 0; }
+.lpa-set-row.is-hidden .lpa-set-name { color: var(--text-muted); }
+button.lpa-set-visibility,
+button.lpa-set-more {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  color: var(--text-faint);
+  background: transparent;
+  box-shadow: none;
+}
+button.lpa-set-visibility[aria-pressed="true"] { color: var(--interactive-accent); }
+button.lpa-set-visibility:hover,
+button.lpa-set-more:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.lpa-set-info { flex: 1 1 auto; min-width: 0; }
+.lpa-set-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-normal);
+}
+.lpa-set-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+.lpa-set-kind-pill {
+  padding: 0 5px;
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+.lpa-set-writing {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  white-space: nowrap;
+}
+button.lpa-set-write {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  height: auto;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  border: 1px solid var(--background-modifier-border);
+}
+button.lpa-set-write:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.lpa-set-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.lpa-set-footer .lpa-set-new { flex: 0 0 auto; }
+.lpa-set-archived { min-width: 0; color: var(--text-muted); font-size: var(--font-ui-small); }
+.lpa-set-archived summary { cursor: pointer; padding: 4px 0; }
+.lpa-set-archived-item { display: flex; align-items: baseline; gap: 8px; padding: 2px 0 2px 14px; }
+.lpa-set-archived-item .lpa-set-name { color: var(--text-muted); }
+
+/* ---- Annotate with AI: task first, connection collapsed --------------------- */
+.lpa-ai-form { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; }
+.lpa-ai-field { display: flex; align-items: center; gap: 12px; }
+.lpa-ai-field.is-stacked { flex-direction: column; align-items: stretch; gap: 6px; }
+.lpa-ai-field.is-stacked .lpa-ai-label { flex: 0 0 auto; }
+.lpa-ai-label {
+  flex: 0 0 88px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+.lpa-ai-control { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.lpa-ai-control > select,
+.lpa-ai-control > input { flex: 1 1 auto; min-width: 0; }
+.lpa-ai-inline { display: flex; flex: 1 1 auto; gap: 6px; min-width: 0; }
+.lpa-ai-inline > input { flex: 1 1 auto; min-width: 0; }
+.lpa-ai-pages { display: flex; align-items: center; gap: 6px; }
+.lpa-ai-pages input { width: 64px; flex: 0 0 auto; }
+.lpa-ai-pages-sep,
+.lpa-ai-pages-total { color: var(--text-muted); font-size: var(--font-ui-small); }
+.lpa-ai-hint {
+  margin: -4px 0 0 100px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+.lpa-ai-modal .lpa-ai-prompt {
+  width: 100%;
+  min-height: 72px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.lpa-ai-connection-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.lpa-ai-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.lpa-ai-connection-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+.lpa-ai-connection-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpa-ai-connection-missing { color: var(--text-warning, var(--color-orange)); }
+button.lpa-ai-change {
+  padding: 0 4px;
+  height: auto;
+  font-size: var(--font-ui-small);
+  color: var(--text-accent);
+  background: transparent;
+  box-shadow: none;
+}
+button.lpa-ai-change:hover { text-decoration: underline; background: transparent; }
+.lpa-ai-privacy {
+  margin-top: 8px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
 }

@@ -26,10 +26,12 @@ export class AiAnnotationModal extends AnchoredPanel {
   private refreshTimer?: ReturnType<typeof setTimeout>;
   private jobsEl?: HTMLElement;
   private jobRows = new Map<string, { row: Setting; phase: string }>();
+  /** Show provider, key and model fields even when a key is already saved. */
+  private connectionOpen = false;
 
   constructor(app: App, private options: AiAnnotationModalOptions) {
-    super(app, options.anchor, 620);
-    this.setId = options.workspace.activeSet().id;
+    super(app, options.anchor, 560);
+    this.setId = preferredSetId(options.workspace, options.jobsRootPath);
     this.toPage = Math.min(10, Number(options.pdfDoc?.numPages ?? 1));
   }
 
@@ -55,62 +57,38 @@ export class AiAnnotationModal extends AnchoredPanel {
     const { contentEl } = this;
     contentEl.empty();
     this.jobRows.clear();
-    contentEl.createEl("p", {
-      cls: "setting-item-description",
-      text:
-        "Only extracted text from the chosen pages and your prompt are sent to the selected provider. " +
-        "The PDF file itself and existing annotations are not sent.",
-    });
+    const pageCount = Number(this.options.pdfDoc?.numPages ?? 1);
+    const form = contentEl.createDiv({ cls: "lpa-ai-form" });
 
-    new Setting(contentEl).setName("Annotation set")
-      .setDesc("Choose an existing set. AI notes are added without replacing its notes or changing your active writing set. Create sets in Annotation sets.")
-      .addDropdown((dropdown) => {
-        for (const set of this.options.workspace.listSets()) dropdown.addOption(set.id, set.name);
-        dropdown.setValue(this.setId).onChange((value) => { this.setId = value; });
-      });
-    this.renderConnection(contentEl);
-    new Setting(contentEl)
-      .setName("Page range")
-      .setDesc(`PDF page positions 1–${this.options.pdfDoc.numPages}, including front matter`)
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.inputEl.min = "1";
-        text.inputEl.max = String(this.options.pdfDoc.numPages);
-        text.setValue(String(this.fromPage)).onChange((value) => {
-          this.fromPage = Number(value);
-        });
-      })
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.inputEl.min = "1";
-        text.inputEl.max = String(this.options.pdfDoc.numPages);
-        text.setValue(String(this.toPage)).onChange((value) => {
-          this.toPage = Number(value);
-        });
-      });
-    new Setting(contentEl).setClass("lpa-ai-prompt-setting").setName("Prompt").setDesc("What should the AI add to this set?").addTextArea((area) => {
-      area.setValue(this.prompt).onChange((value) => {
-        this.prompt = value;
-      });
-      area.inputEl.rows = 5;
-      area.inputEl.addClass("lpa-ai-prompt");
-    });
+    const setField = field(form, "Target set");
+    const select = setField.createEl("select", { cls: "dropdown" });
+    for (const set of this.options.workspace.listSets()) select.createEl("option", { value: set.id, text: set.name });
+    select.value = this.setId;
+    select.onchange = () => {
+      this.setId = select.value;
+      rememberSetId(this.options.jobsRootPath, this.setId);
+    };
+    form.createDiv({ cls: "lpa-ai-hint", text: "Existing notes are kept. New sets are made in Annotation sets." });
 
-    new Setting(contentEl)
-      .setName("Run AI annotation")
-      .setDesc("Adds annotations to the selected set; existing notes are kept.")
-      .addButton((button) =>
-        button.setButtonText("Start annotation job").setCta().onClick(async () => {
-          button.setDisabled(true);
-          try { await this.start(); } finally { button.setDisabled(false); }
-        })
-      );
+    const pages = field(form, "Pages").createDiv({ cls: "lpa-ai-pages" });
+    const pageInput = (value: number, label: string, set: (n: number) => void) => {
+      const input = pages.createEl("input", { attr: { type: "number", min: "1", max: String(pageCount), "aria-label": label } });
+      input.value = String(value);
+      input.oninput = () => set(Number(input.value));
+    };
+    pageInput(this.fromPage, "First page", (n) => { this.fromPage = n; });
+    pages.createSpan({ cls: "lpa-ai-pages-sep", text: "to" });
+    pageInput(this.toPage, "Last page", (n) => { this.toPage = n; });
+    pages.createSpan({ cls: "lpa-ai-pages-total", text: `of ${pageCount}` });
 
-    contentEl.createEl("p", {
-      cls: "setting-item-description",
-      text:
-        "Every returned quote is matched back to the named PDF page locally. Unmatched quotes are rejected rather than placed approximately.",
-    });
+    const promptField = field(form, "Prompt", true);
+    const prompt = promptField.createEl("textarea", { cls: "lpa-ai-prompt", attr: { rows: "4", "aria-label": "Prompt" } });
+    prompt.value = this.prompt;
+    prompt.oninput = () => { this.prompt = prompt.value; };
+
+    this.renderConnection(form);
+
+    contentEl.createDiv({ cls: "lpa-ai-privacy", text: "Only the text of these pages and your prompt are sent." });
 
     const jobsHeading = contentEl.createEl("h3", { text: "Jobs for this PDF" });
     jobsHeading.addClass("lpa-ai-jobs-heading");
@@ -122,57 +100,65 @@ export class AiAnnotationModal extends AnchoredPanel {
   private renderConnection(container: HTMLElement): void {
     const connection = this.options.getConnection();
     const configure = this.options.configureConnection;
-    if (!configure) return;
-    new Setting(container).setName("Provider").addDropdown((dropdown) => {
-      for (const preset of AI_PROVIDER_PRESETS) dropdown.addOption(preset.id, preset.name);
-      dropdown.setValue(connection.provider).onChange(async (provider) => {
-        dropdown.setDisabled(true);
+    const preset = AI_PROVIDER_PRESETS.find((candidate) => candidate.id === connection.provider);
+    const ready = !!connection.apiKey.trim() && !!connection.model.trim();
+    const open = !!configure && (this.connectionOpen || !ready);
+
+    if (open && configure) {
+      const fields = container.createDiv({ cls: "lpa-ai-connection-fields" });
+      const providerSelect = field(fields, "Provider").createEl("select", { cls: "dropdown" });
+      for (const option of AI_PROVIDER_PRESETS) providerSelect.createEl("option", { value: option.id, text: option.name });
+      providerSelect.value = connection.provider;
+      providerSelect.onchange = async () => {
+        providerSelect.disabled = true;
         try {
-          await configure({ provider: provider as AiProviderId });
+          this.connectionOpen = true;
+          await configure({ provider: providerSelect.value as AiProviderId });
           this.render();
-        } catch { new Notice("Could not save the provider selection."); dropdown.setDisabled(false); }
-      });
-    });
-    if (connection.provider === "custom") {
-      let endpoint = connection.baseUrl;
-      new Setting(container).setName("Custom endpoint")
-        .setDesc("OpenAI-compatible base URL. Applying a different endpoint loads its own saved key.")
-        .addText((text) => text.setValue(endpoint).onChange((value) => { endpoint = value.trim(); }))
-        .addButton((button) => button.setButtonText("Apply").onClick(async () => {
+        } catch { new Notice("Could not save the provider selection."); providerSelect.disabled = false; }
+      };
+      if (connection.provider === "custom") {
+        let endpoint = connection.baseUrl;
+        const row = field(fields, "Custom endpoint").createDiv({ cls: "lpa-ai-inline" });
+        const input = row.createEl("input", { attr: { type: "text", placeholder: "https://…/v1", "aria-label": "Custom endpoint" } });
+        input.value = endpoint;
+        input.oninput = () => { endpoint = input.value.trim(); };
+        const apply = row.createEl("button", { text: "Apply", attr: { type: "button" } });
+        apply.onclick = async () => {
           try {
             connectionIdentity({ ...connection, baseUrl: endpoint });
             await configure({ baseUrl: endpoint, model: connection.model });
             this.render();
           } catch { new Notice("Enter a valid HTTPS base URL (HTTP is allowed for localhost)."); }
-        }));
-    }
-    const keySetting = new Setting(container).setName("API key")
-      .setDesc(connection.apiKey ? "A key is saved for this provider on this device. Paste to replace it." : "Paste this provider’s key. Saved on this device, outside your vault; storage is not encrypted.");
-    keySetting.addText((text) => {
-      text.inputEl.type = "password";
-      text.inputEl.autocomplete = "off";
+        };
+      }
+      const keyField = field(fields, "API key");
+      const key = keyField.createEl("input", { attr: { type: "password", autocomplete: "off", "aria-label": "API key" } });
       // Never populate the DOM with the previously saved credential.
-      text.setPlaceholder(connection.apiKey ? "Saved key · paste to replace" : "Paste API key")
-        .onChange(async (apiKey) => {
-          try {
-            if (connectionIdentity(this.options.getConnection()) !== connectionIdentity(connection)) return;
-            await configure({ apiKey });
-            keySetting.setDesc(apiKey.trim() ? "Key saved on this device, outside your vault; storage is not encrypted." : "No key saved. Paste this provider’s key.");
-          } catch { new Notice("Could not save the API key."); }
-        });
-    });
-    new Setting(container).setName("Model")
-      .setDesc("Up to four recent text models, refreshed from the provider. You can also enter a model ID.")
-      .addText((text) => text.setPlaceholder("Model ID").setValue(connection.model).onChange(async (model) => {
+      key.placeholder = connection.apiKey ? "Saved key · paste to replace" : "Paste API key";
+      const keyHint = fields.createDiv({ cls: "lpa-ai-hint", text: "Stored only on this device, outside your vault (not encrypted)." });
+      key.oninput = async () => {
         try {
           if (connectionIdentity(this.options.getConnection()) !== connectionIdentity(connection)) return;
-          await configure({ model });
+          await configure({ apiKey: key.value });
+          keyHint.setText(key.value.trim() ? "Key saved on this device, outside your vault (not encrypted)." : "No key saved. Paste this provider’s key.");
+        } catch { new Notice("Could not save the API key."); }
+      };
+      const modelRow = field(fields, "Model").createDiv({ cls: "lpa-ai-inline" });
+      const model = modelRow.createEl("input", { attr: { type: "text", placeholder: "Model ID", "aria-label": "Model" } });
+      model.value = connection.model;
+      model.oninput = async () => {
+        try {
+          if (connectionIdentity(this.options.getConnection()) !== connectionIdentity(connection)) return;
+          await configure({ model: model.value });
         } catch { new Notice("Could not save the model."); }
-      }))
-      .addButton((button) => button.setButtonText("Choose model").onClick(async () => {
+      };
+      const choose = modelRow.createEl("button", { text: "Choose model", attr: { type: "button" } });
+      choose.onclick = async () => {
         const snapshot = { ...this.options.getConnection() };
         if (!snapshot.apiKey.trim()) { new Notice("Paste an API key above first."); return; }
-        button.setDisabled(true).setButtonText("Loading…");
+        choose.disabled = true;
+        choose.setText("Loading…");
         try {
           const models = await listAiModels(snapshot);
           const stillCurrent = () => {
@@ -181,14 +167,32 @@ export class AiAnnotationModal extends AnchoredPanel {
           };
           if (!stillCurrent()) return;
           if (!models.length) { new Notice("No models returned. You can enter a model ID instead."); return; }
-          new AnnotationModelPicker(this.app, models, async (model) => {
+          new AnnotationModelPicker(this.app, models, async (picked) => {
             if (!stillCurrent()) return;
-            await configure({ model });
+            await configure({ model: picked });
             this.render();
           }).open();
         } catch (error) { new Notice(`Could not load models: ${safeProviderError(error, snapshot.apiKey).message}`); }
-        finally { button.setDisabled(false).setButtonText("Choose model"); }
-      }));
+        finally { choose.disabled = false; choose.setText("Choose model"); }
+      };
+    }
+
+    const bar = container.createDiv({ cls: "lpa-ai-action-bar" });
+    const status = bar.createDiv({ cls: "lpa-ai-connection-status" });
+    if (ready) {
+      status.createSpan({ cls: "lpa-ai-connection-name", text: `${preset?.name ?? connection.provider} · ${connection.model}` });
+    } else {
+      status.createSpan({ cls: "lpa-ai-connection-missing", text: connection.apiKey.trim() ? "Choose a model to start" : "Add an API key to start" });
+    }
+    if (configure && ready) {
+      const toggle = status.createEl("button", { cls: "lpa-ai-change", text: open ? "Done" : "Change", attr: { type: "button" } });
+      toggle.onclick = () => { this.connectionOpen = !open; this.render(); };
+    }
+    const start = bar.createEl("button", { cls: "mod-cta", text: "Start annotation job", attr: { type: "button" } });
+    start.onclick = async () => {
+      start.disabled = true;
+      try { await this.start(); } finally { start.disabled = false; }
+    };
   }
 
   private context(): AiJobContext {
@@ -234,6 +238,7 @@ export class AiAnnotationModal extends AnchoredPanel {
       toPage: to,
       prompt: this.prompt,
     });
+    rememberSetId(this.options.jobsRootPath, set.id);
     this.options.changed();
     new Notice(`AI annotation started for pages ${from}–${to}.`);
       this.render();
@@ -309,5 +314,35 @@ class AnnotationModelPicker extends FuzzySuggestModal<string> {
   getItemText(model: string): string { return model; }
   onChooseItem(model: string): void {
     void this.choose(model).catch(() => new Notice("Could not save the selected model."));
+  }
+}
+
+/** A labelled block inside the AI panel. */
+function field(container: HTMLElement, label: string, stacked = false): HTMLElement {
+  const row = container.createDiv({ cls: `lpa-ai-field${stacked ? " is-stacked" : ""}` });
+  row.createEl("label", { cls: "lpa-ai-label", text: label });
+  return row.createDiv({ cls: "lpa-ai-control" });
+}
+
+const LAST_SET_KEY = "pdf-annotator:ai-last-set";
+
+/** The set chosen last for this PDF, else the newest AI set, else the active set. */
+function preferredSetId(workspace: AnnotationSetWorkspace, jobsRootPath: string): string {
+  const sets = workspace.listSets();
+  let remembered: string | undefined;
+  try { remembered = JSON.parse(window.localStorage.getItem(LAST_SET_KEY) ?? "{}")[jobsRootPath]; } catch { remembered = undefined; }
+  if (remembered && sets.some((set) => set.id === remembered)) return remembered;
+  const ai = sets.filter((set) => set.kind === "ai");
+  if (ai.length) return ai[ai.length - 1].id;
+  return workspace.activeSet().id;
+}
+
+function rememberSetId(jobsRootPath: string, setId: string): void {
+  try {
+    const all = JSON.parse(window.localStorage.getItem(LAST_SET_KEY) ?? "{}");
+    all[jobsRootPath] = setId;
+    window.localStorage.setItem(LAST_SET_KEY, JSON.stringify(all));
+  } catch {
+    // Remembering is a convenience only.
   }
 }
