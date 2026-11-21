@@ -163,32 +163,73 @@ that storage is not encrypted. See [Privacy](#privacy) for the details.
 
 ## Use the same notes on several computers (Beta)
 
-Turn on **Settings → PDF Annotator → Sync annotations between devices** on
-each computer. Your sync tool (Obsidian Sync, iCloud, Syncthing, Git, Dropbox…)
-then carries your annotations between them. Edit on one computer, open the
-PDF on another, and the changes are there.
+Keep your highlights, notes, tags, and annotation sets in sync across desktop
+computers using the sync tool you already have — Obsidian Sync, iCloud,
+Syncthing, Git, Dropbox, and similar file sync tools.
 
-- Each computer writes only its own files, in the `_pdf-annotator-sync`
-  folder, so sync tools never overwrite one computer's work with another's.
-- If two computers change the same note before they sync, both versions are
-  kept in the note, under a clearly marked line, so no writing is lost.
-- If another computer deleted many annotations at once, they are kept until
-  you confirm with **Apply pending sync deletions for current PDF**.
-- **Undo last sync for current PDF** restores your annotations to how they
-  were before the last change sync applied. Run it again to go further back.
-- **Restore current PDF's annotations from before sync was turned on** puts a
-  PDF back exactly as it was before sync first touched it.
-- Which sets you show and where you write stay separate on each computer.
+Sync is **off by default**. With it turned off, PDF Annotator behaves exactly
+as before.
 
-Sync is new. If anything goes wrong, errors, slowness, or a write loop, it
-pauses itself and your annotations keep working as usual. With sync turned
-off, the plugin behaves exactly as before. Sync works between desktop
-computers; the plugin does not yet run on phones or tablets.
+### Set it up
 
-While sync is on, its folder is hidden from the file list. The **Exclude sync
-folder** button in settings also keeps it out of search and the graph, and
-ranks it lower in the quick switcher. Do not add the folder to Obsidian Sync's own excluded
-folders; that would stop it from syncing.
+1. Open **Settings → PDF Annotator → Multi-device sync (Beta)** on **each
+   computer** and turn on **Sync annotations between devices**.
+2. Click **Exclude sync folder** to keep sync files out of Search and Graph
+   (this also ranks them lower in Quick Switcher).
+3. Reopen any PDF that was already open, or toggle **Annotate** off and back
+   on, so sync attaches to it.
+
+> **Obsidian Sync users:** **Exclude sync folder** uses **Settings → Files and
+> links → Excluded files**, which is safe. Do **not** add `_pdf-annotator-sync`
+> to **Obsidian Sync's own Excluded folders** — that will stop it from syncing.
+
+### How it works day to day
+
+- **Same PDF, same notes:** Both computers need the exact same PDF file
+  (byte-for-byte). A re-saved, re-exported, or OCR'd copy counts as a
+  different document.
+- **Syncs while you read:** Changes sync automatically while a PDF is open in
+  annotation mode (usually within a couple of seconds). Edits made while a PDF
+  is closed — or right before quitting Obsidian — are published the next time
+  you open that PDF in annotation mode.
+- **No silent overwrites:** Each computer writes only its own file inside
+  `_pdf-annotator-sync`, so sync tools never overwrite one computer's work
+  with another's.
+- **Conflicts keep all your writing:** If you edit the same note offline on
+  two computers, both versions are kept in the note separated by a
+  `[Sync conflict kept · …]` divider. Edit the note once to resolve it.
+- **Personal view stays personal:** Which sets are visible (the eye toggles)
+  and which set is **Active** stay separate on each computer.
+- **Desktop only:** PDF Annotator does not run on phones or tablets yet.
+
+### Built-in safety nets
+
+Sync is in beta, so it is built to fail safely without touching your ability
+to read and annotate:
+
+- **Auto-pause on trouble:** If sync hits an error, slows Obsidian down, or
+  detects a write loop, it pauses itself while your annotations keep working
+  normally. Run **Resume sync for current PDF** from the command palette to
+  try again.
+- **Large deletion guard:** If another computer deleted many annotations at
+  once, they are kept locally until you confirm with **Apply pending sync
+  deletions for current PDF**.
+- **Step back anytime:** Run **Undo last sync for current PDF** to revert the
+  last remote change applied to the open PDF (up to 15 steps back).
+- **Emergency reset:** Run **Restore current PDF's annotations from before
+  sync was turned on** to return to your pre-sync snapshot. On a second
+  computer that had no annotations before sync, this clears the PDF (with a
+  confirmation prompt).
+
+Both **Undo** and **Restore** pause sync for that PDF so your restored version
+isn't overwritten. To keep a restored version **only** on the current
+computer, turn sync off in settings before restarting Obsidian — otherwise
+restarting or resuming will share it to your other devices.
+
+While sync is on, `_pdf-annotator-sync` is automatically hidden from the file
+explorer. If you use plugins that scan all Markdown files (such as Dataview or
+Linter), you may want to exclude `_pdf-annotator-sync` inside those plugins'
+settings as well.
 
 ---
 
@@ -315,67 +356,81 @@ than syncing `.pdf-annotator/` itself.
 
 ## Multi-Device Sync (Beta)
 
-Off by default. When it is off, no sync code runs and no sync files are read
-or written. When it is on, a separate module copies annotations between the
-unchanged local bundle and a visible, synced folder:
+Off by default. When disabled, no sync listeners are registered and no sync
+files are read or written. When enabled, a sidecar module bridges the
+unchanged vault-local bundle and a visible, synced folder:
 
 ```text
-_pdf-annotator-sync/<sha256>/<device-id>.md   # synced; written only by that device
-.pdf-annotator/sync/<device-id>/<sha256>/      # this device only
-  baseline.json   own.json   snapshots/*.json
+_pdf-annotator-sync/<sha256>/<device-id>.md      # synced; written only by that device
+.pdf-annotator/sync/<device-id>/<sha256>/        # device-local only (never synced)
+  baseline.json   own.json   pre-sync-backup.json   snapshots/*.json
 ```
 
-The local bundle stays the source of truth. Sync reads it, and writes merged
-changes back only through the annotation workspace, so the existing
-`.previous` backups still apply. The device id and write tokens are kept in
-Obsidian's device-local storage, never in `data.json`, so cloning plugin
-settings cannot give two computers the same id; a copied id is detected and
-replaced.
+### Architecture and merge rules
 
-Shards are Markdown, so Obsidian Sync syncs them by default (other file types
-need "Sync all other types"). The JSON block sits between sentinel comments; a
-partial or damaged file is retried, then skipped, and is never treated as
-empty. Conflict copies created by sync tools are read as extra, read-only
-shards.
+- **Local bundle stays canonical:** Sync reads from and writes back through
+  the annotation workspace, preserving existing `.previous` backups.
+- **Device identity:** Each device's ID and per-shard write nonces are stored
+  in Obsidian's device-local storage (`saveLocalStorage`, falling back to
+  `window.localStorage`), never in `data.json`. If a cloned machine reuses an
+  ID, the nonce mismatch is detected and a fresh ID is issued automatically.
+- **Markdown shards:** Sync files use `.md` so Obsidian Sync includes them
+  without requiring "Sync all other types". The JSON payload sits between
+  sentinel comments (`<!-- pdf-annotator-sync:start -->` / `end`); partial or
+  damaged files are retried (300 / 800 / 2000 ms), then skipped without ever
+  being treated as empty. Sync-tool conflict copies are read as additional
+  read-only shards.
+- **Deterministic merge:** Merging is a pure function over all shards in the
+  PDF's hash folder. Deletions (tombstones) and style/geometry fields use
+  last-writer-wins with per-record monotonic clocks (`max(now, previous + 1)`),
+  so a skewed clock cannot lock an annotation. Note text uses per-annotation
+  version vectors so truly concurrent edits are stitched rather than dropped,
+  and a note edited after a deletion keeps the annotation alive.
+- **Sets:** Set names, colours, kinds, and archived states sync; visibility
+  and the active writing set remain device-local. Sets are archived rather
+  than deleted and annotations do not move between sets.
 
-Merging is a pure function of all shards. Deletion state and style/structure
-use last-writer-wins with per-record clocks (`max(now, previous + 1)`), so a
-computer with a wrong clock cannot freeze an annotation. Note text uses
-version vectors: a new edit supersedes only the versions that device had
-shown; truly concurrent versions are stitched together instead of dropped.
-Deletions are tombstones, and a note written after a deletion keeps the
-annotation. Annotation sets can be archived but not deleted, and an
-annotation's set never changes, so there are no orphaned or moved-set
-conflicts. Archive state, names, and colours sync; visibility and the active
-set do not.
+### Safety rails
 
-Safety rails, each deliberately small:
+- **Pre-sync backup:** Saved once per PDF (all sets, archived included) before
+  sync first touches it, and never rotated.
+- **Rolling undo snapshots:** Up to 15 per PDF, taken only immediately before
+  remote changes are applied (never on local edits).
+- **Validate-before-apply:** Incoming changes are validated as a whole before
+  mutating workspace state; mid-apply failures roll back in-memory state.
+- **Governors and breakers:** Any sync error pauses that PDF (3 session errors
+  pause all PDFs). Cycles exceeding 300 ms of main-thread work back off up to
+  60 s, then pause. More than 10 shard writes in 10 minutes without user or AI
+  edits pause as a write loop. **Sync current PDF now** reports the exact
+  pause reason, **Resume sync for current PDF** resets any pause (including
+  errors), and Undo/Restore bypass the error breaker.
+- **Deletion threshold:** Remote batches deleting more than 5 annotations — or
+  at least 3 annotations removing over 20% of a PDF's annotations — are held
+  until confirmed via **Apply pending sync deletions for current PDF**.
+- **Focus & render isolation:** Remote changes wait while any plugin text
+  input has focus. Independently of sync, each annotation renders inside its
+  own `try/catch` guard so one unexpected record cannot break a page or list.
 
-- Before sync first touches a PDF on a device, a full copy of that PDF's
-  annotations (every set, archived included) is saved once and never
-  rotated; one command restores it.
-- A snapshot is taken only immediately before sync changes local data (a
-  rolling 15 per PDF, so a loop cannot fill the disk). Undo steps back one
-  snapshot per run.
-- The workspace validates a whole incoming change before touching anything;
-  if applying still fails part-way, the in-memory state is rolled back.
-- Errors pause sync for that PDF (three pause it for every PDF). "Sync
-  current PDF now" reports why a PDF is paused, and "Resume sync for current
-  PDF" clears any pause, errors included, with a fresh engine. Undo and
-  restore work even while sync is in an error state.
-  Cycles taking over 300 ms of main-thread time back off up to 60 s, then
-  pause. More than 10 shard writes in 10 minutes with no user or AI change
-  behind them are treated as a loop and pause; sync's own changes are
-  flagged synchronously, so ordinary editing never counts.
-- Large remote deletions (more than 5, or 3+ that remove over 20% of a PDF's
-  annotations) wait for **Apply pending sync deletions for current PDF**.
-- Remote changes are not applied while an annotation note has focus.
-- Independently of sync, each annotation is drawn inside its own guard, so
-  one annotation with unexpected data is skipped instead of breaking a page
-  or list. The sync layer itself checks only basic structure, so annotation
-  types from newer versions pass through. The design and test plan
-are in `docs/sync-design.md`. `npm test` includes a randomized three-device
-simulation (`LPA_SYNC_SEEDS` sets the number of runs).
+### Known limitations (Beta)
+
+- **Active PDFs only & quit flush:** Sync runs only while a PDF is open in
+  annotation mode, and intentionally skips async writes during Obsidian quit.
+  Any unpublished local edits stay safely saved in `.pdf-annotator/` and
+  publish the next time that PDF is opened in annotation mode.
+- **Detection-time timestamps:** Style/position timestamps reflect when sync
+  detects a change, so a long-offline style edit can override a newer style
+  edit on another device. Note text is protected by version vectors and is
+  never lost this way.
+- **Online-only cloud files:** Cloud features such as iCloud "Optimize Mac
+  Storage" can evict shards to placeholders; evicted shards are skipped until
+  downloaded (nothing is deleted, but that device's updates wait).
+- **Other Markdown plugins:** Shards are standard `.md` files. Frontmatter or
+  summary edits by formatting plugins are ignored by the parser, but any
+  plugin that modifies the JSON block can damage a shard.
+
+The design notes and test plan are in `docs/sync-design.md`. `npm test`
+includes unit tests, multi-device scenarios, and a randomized three-device
+simulation (`LPA_SYNC_SEEDS` sets the run count).
 
 ## Privacy
 
