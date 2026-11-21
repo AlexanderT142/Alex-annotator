@@ -119,11 +119,13 @@ need right now. Nothing is erased when you hide a set.
 
 Click the set name at the top right to open the dropdown:
 
-- A **purple eye** means that set is visible. Click it to hide the set; click a
-  grey eye to show it again.
+- The **eye** at the left of each set shows whether it is visible. Click it to
+  hide the set (the eye is crossed out); click again to show it.
 - **Write here** chooses where your next manual notes will go. That set then
-  says **Active**. Other sets can still be visible at the same time.
-- **New set** gives you another space for a different purpose.
+  shows **✓ Writing here**. Other sets can still be visible at the same time.
+- Each set shows how many notes it holds. The **⋯** menu renames or archives it.
+- **+ New set** gives you another space for a different purpose. Archived sets
+  are listed under **Archived** at the bottom.
 
 ![Annotation-set dropdown showing personal notes, translations, and a reading partner with independent visibility](docs/screenshots/annotation-sets-dropdown-retina.png)
 
@@ -137,7 +139,8 @@ idea in a separate set.
 
 1. Create a set in the set dropdown, such as **Translation** or **Reading partner**.
 2. Click **AI** at the top right and choose that existing set.
-3. Choose your provider, paste its API key, and choose a model.
+3. The first time, choose your provider, paste its API key, and choose a model.
+   After that the panel shows them on one line; click **Change** to edit them.
 4. Pick a few pages and describe the help you want. For example: “Translate key
    passages into Chinese” or “Explain unfamiliar ideas and useful connections.”
 5. Start the job and keep reading. Progress appears on the toolbar, and closing
@@ -196,10 +199,10 @@ as before.
   `_pdf-annotator-sync`, so sync tools never overwrite one computer's work
   with another's.
 - **Conflicts keep all your writing:** If you edit the same note offline on
-  two computers, both versions are kept in the note separated by a
-  `[Sync conflict kept · …]` divider. Edit the note once to resolve it.
+  two computers, both versions are kept in the note, and its card shows a
+  **Sync conflict** label. Edit the note once to resolve it.
 - **Personal view stays personal:** Which sets are visible (the eye toggles)
-  and which set is **Active** stay separate on each computer.
+  and which set you are writing to stay separate on each computer.
 - **Desktop only:** PDF Annotator does not run on phones or tablets yet.
 
 ### Built-in safety nets
@@ -216,8 +219,8 @@ to read and annotate:
   deletions for current PDF**.
 - **Step back anytime:** Run **Undo last sync for current PDF** to revert the
   last remote change applied to the open PDF (up to 15 steps back).
-- **Emergency reset:** Run **Restore current PDF's annotations from before
-  sync was turned on** to return to your pre-sync snapshot. On a second
+- **Emergency reset:** Run **Restore pre-sync backup for current PDF** to
+  return to your pre-sync snapshot. On a second
   computer that had no annotations before sync, this clears the PDF (with a
   confirmation prompt).
 
@@ -458,15 +461,16 @@ provider selected is blocked before any request is sent.
 ## Parallel Annotation Sets and AI
 
 Use the set button beside **Annotate** to create, rename, show, hide,
-archive, or change the active annotation set. Purple eyes mean visible; grey
-eyes mean hidden. Both the set manager and AI controls open as non-modal
+archive, or change the active annotation set. An eye means visible; a crossed-out
+eye means hidden. Archived sets are listed read-only at the bottom. Both the set manager and AI controls open as non-modal
 dropdown panels beneath their toolbar buttons. Click outside, press Escape,
 or click the same button again to close them; dismissing AI controls does not
 stop a running job. The AI panel selects an existing set and adds annotations
 from a page range and prompt without replacing notes or changing your active
-writing set. Create sets in the set manager, not in the AI dialog. Provider,
-device-local API key, and model controls are also available directly in the
-AI dialog. Long jobs are checkpointed in small page batches
+writing set. Create sets in the set manager, not in the AI dialog; the AI panel
+remembers the set you last chose for each PDF. Provider, device-local API key,
+and model controls are also available directly in the AI dialog, collapsed to
+one line once a key and model are saved. Long jobs are checkpointed in small page batches
 and can be paused, resumed, or cancelled.
 Interrupted jobs reopen as paused and can continue from their last saved page
 batch. Progress updates inside the job dialog as well as on the toolbar;
@@ -474,7 +478,7 @@ cancelling keeps annotations from completed batches.
 
 Provider settings include OpenAI, Anthropic, Gemini, xAI, DeepSeek, GLM, Qwen,
 Kimi, and custom OpenAI-compatible endpoints. Known key formats are detected
-automatically. The **Choose current model** action asks the selected provider
+automatically. The **Choose model** action asks the selected provider
 for its live model list and shows at most four distinct recent text models.
 Dated snapshots and aliases share a slot; reasoning effort does not create a
 separate model. Media and other specialized models are omitted from this picker.
