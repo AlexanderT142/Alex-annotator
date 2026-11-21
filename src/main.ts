@@ -546,6 +546,8 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       this.settings.annotationStorageFolder
     );
     this.settings.ai = normalizeAiSettings(this.settings.ai);
+    const savedModel = typeof saved?.ai?.model === "string" ? saved.ai.model.trim() : "";
+    const retiredModel = !!savedModel && savedModel !== this.settings.ai.model;
     this.settings.syncEnabled = saved.syncEnabled === true;
     this.settings.syncFolder = normalizeSyncFolder(typeof saved.syncFolder === "string" ? saved.syncFolder : DEFAULT_SYNC_FOLDER);
     this.settings.paletteColors = normalizePaletteColors(this.settings.paletteColors);
@@ -556,6 +558,11 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
     } catch {
       this.settings.ai.apiKey = legacyApiKey;
       new Notice("PDF Annotator: device-local key storage is unavailable. Key migration was not completed; the existing copy was preserved.");
+      return;
+    }
+    if (retiredModel) {
+      await this.saveSettings();
+      new Notice(`PDF Annotator: the AI model “${savedModel}” has been retired by its provider, so it was switched to “${this.settings.ai.model}”. You can choose another in settings.`, 12000);
     }
   }
 

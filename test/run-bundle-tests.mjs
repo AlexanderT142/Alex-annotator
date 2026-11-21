@@ -33,7 +33,7 @@ const tests = [
   { entry: "test/tag-gesture-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/annotation-export-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/anchored-panel-smoke.ts" },
-  { entry: "test/model-shortlist-smoke.ts" },
+  { entry: "test/model-shortlist-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/ai-modal-smoke.ts", alias: { obsidian: path.join(root, "test/obsidian-stub.ts") } },
   { entry: "test/margin-card-smoke.ts" },
   { entry: "test/pdf-data-smoke.ts" },

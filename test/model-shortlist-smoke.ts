@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { recentAnnotationModels } from "../src/model-shortlist";
+import { AI_PROVIDER_PRESETS, normalizeAiSettings, replacementForRetiredModel } from "../src/ai-provider";
 
 const openai = [
   { id: "gpt-5.4-mini", created: 100 },
@@ -42,4 +43,17 @@ for (const provider of ["openai", "anthropic", "gemini", "xai", "deepseek", "glm
   assert.equal(JSON.stringify(input), original, "provider records remain unchanged");
 }
 assert.deepEqual(recentAnnotationModels("custom", []), []);
-console.log("model shortlist smoke: nine providers, four distinct models, newest-first ranking, effort/snapshot deduplication and media filtering passed");
+// Retired models: saved settings move to the provider's replacement; current models are left alone.
+assert.equal(replacementForRetiredModel("anthropic", "claude-sonnet-4-5"), "claude-sonnet-5-5");
+assert.equal(replacementForRetiredModel("anthropic", "claude-sonnet-4-5-20250929"), "claude-sonnet-5-5", "dated snapshots match");
+assert.equal(replacementForRetiredModel("openai", "gpt-4o-2024-11-20"), "gpt-6-luna");
+assert.equal(replacementForRetiredModel("gemini", "models/gemini-3.7-flash"), "gemini-3.8-flash");
+assert.equal(replacementForRetiredModel("deepseek", "deepseek-chat"), "deepseek-flash");
+assert.equal(replacementForRetiredModel("openai", "gpt-5.4-mini"), null, "still-served models are kept");
+assert.equal(replacementForRetiredModel("custom", "gpt-4o"), null, "custom endpoints are never rewritten");
+assert.equal(normalizeAiSettings({ provider: "kimi", model: "kimi-k2.5" }).model, "kimi-k3.1-pro");
+for (const preset of AI_PROVIDER_PRESETS) {
+  assert.equal(replacementForRetiredModel(preset.id, preset.defaultModel), null, `${preset.id} default is not retired`);
+}
+
+console.log("model shortlist smoke: nine providers, four distinct models, newest-first ranking, effort/snapshot deduplication, media filtering and retired-model replacement passed");

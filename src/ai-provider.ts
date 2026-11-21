@@ -31,17 +31,21 @@ export interface AiConnectionSettings {
   apiKey: string;
 }
 
+/** Claude API version. Nothing this plugin sends changed between 2023-06-01 and this one. */
+const ANTHROPIC_VERSION = "2026-10-21";
+
 export type ConfigureAiConnection = (patch: Partial<AiConnectionSettings>) => Promise<void>;
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
-  { id: "openai", name: "OpenAI", protocol: "openai-compatible", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" },
-  { id: "anthropic", name: "Claude (Anthropic)", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-sonnet-4-5" },
-  { id: "gemini", name: "Gemini", protocol: "gemini-generate-content", baseUrl: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-3.7-flash" },
-  { id: "xai", name: "Grok (xAI)", protocol: "openai-compatible", baseUrl: "https://api.x.ai/v1", defaultModel: "grok-4.6" },
-  { id: "deepseek", name: "DeepSeek", protocol: "openai-compatible", baseUrl: "https://api.deepseek.com", defaultModel: "deepseek-v4-flash" },
-  { id: "glm", name: "GLM (Zhipu)", protocol: "openai-compatible", baseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-5.2" },
-  { id: "qwen", name: "Qwen (DashScope international)", protocol: "openai-compatible", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen-plus" },
-  { id: "kimi", name: "Kimi (Moonshot)", protocol: "openai-compatible", baseUrl: "https://api.moonshot.cn/v1", defaultModel: "kimi-k2.5" },
+  // Defaults checked against each provider's model and deprecation pages, Nov 2026.
+  { id: "openai", name: "OpenAI", protocol: "openai-compatible", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-6-luna" },
+  { id: "anthropic", name: "Claude (Anthropic)", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-opus-5-5" },
+  { id: "gemini", name: "Gemini", protocol: "gemini-generate-content", baseUrl: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-4-hydrogen" },
+  { id: "xai", name: "Grok (xAI)", protocol: "openai-compatible", baseUrl: "https://api.x.ai/v1", defaultModel: "grok-4.7" },
+  { id: "deepseek", name: "DeepSeek", protocol: "openai-compatible", baseUrl: "https://api.deepseek.com", defaultModel: "deepseek-flash" },
+  { id: "glm", name: "GLM (Zhipu)", protocol: "openai-compatible", baseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-5.3" },
+  { id: "qwen", name: "Qwen (DashScope international)", protocol: "openai-compatible", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen3.7-plus" },
+  { id: "kimi", name: "Kimi (Moonshot)", protocol: "openai-compatible", baseUrl: "https://api.moonshot.cn/v1", defaultModel: "kimi-k3.1-pro" },
   { id: "custom", name: "Custom OpenAI-compatible", protocol: "openai-compatible", baseUrl: "", defaultModel: "" },
 ];
 
@@ -49,9 +53,57 @@ export const DEFAULT_AI_SETTINGS: AiConnectionSettings = {
   provider: "openai",
   protocol: "openai-compatible",
   baseUrl: "https://api.openai.com/v1",
-  model: "gpt-5.4-mini",
+  model: "gpt-6-luna",
   apiKey: "",
 };
+
+/**
+ * Models their providers have shut down or scheduled for shutdown, mapped to
+ * the replacement each provider recommends (or the nearest current model of
+ * the same tier). A saved setting naming one of these is moved on load so a
+ * job never fails on a retired model. Dated snapshots of these IDs match too.
+ */
+const RETIRED_MODELS: Partial<Record<AiProviderId, Record<string, string>>> = {
+  openai: {
+    "gpt-5": "gpt-6.1-sol", "gpt-5-mini": "gpt-6.1-terra", "gpt-5-nano": "gpt-6-luna",
+    "gpt-5-chat-latest": "gpt-6.1-sol", "gpt-5.1": "gpt-6-sol", "gpt-5.1-chat-latest": "gpt-6.1-sol",
+    "gpt-5.2-chat-latest": "gpt-6.1-sol", "gpt-5.3-chat-latest": "gpt-6.1-sol", "gpt-5.4-nano": "gpt-6-luna",
+    "o1": "gpt-6.1-sol", "o3": "gpt-6.1-sol", "o3-mini": "gpt-6.1-sol", "o4-mini": "gpt-6.1-terra",
+    "gpt-4o": "gpt-6-luna", "gpt-4o-mini": "gpt-6-luna", "gpt-4.1": "gpt-6-luna",
+    "gpt-4.1-mini": "gpt-6-luna", "gpt-4.1-nano": "gpt-6-luna",
+  },
+  anthropic: {
+    "claude-sonnet-4-5": "claude-sonnet-5-5", "claude-sonnet-4-0": "claude-sonnet-5-5", "claude-sonnet-4": "claude-sonnet-5-5",
+    "claude-3-7-sonnet": "claude-sonnet-5-5", "claude-3-7-sonnet-latest": "claude-sonnet-5-5",
+    "claude-3-5-sonnet": "claude-sonnet-5-5", "claude-3-5-sonnet-latest": "claude-sonnet-5-5",
+    "claude-opus-4-1": "claude-opus-5-5", "claude-opus-4-0": "claude-opus-5-5", "claude-opus-4": "claude-opus-5-5",
+    "claude-3-opus": "claude-opus-5-5", "claude-3-opus-latest": "claude-opus-5-5",
+    "claude-3-5-haiku": "claude-haiku-5-5", "claude-3-5-haiku-latest": "claude-haiku-5-5", "claude-3-haiku": "claude-haiku-5-5",
+  },
+  gemini: {
+    "gemini-3.7-flash": "gemini-3.8-flash", "gemini-3.5-flash": "gemini-3.6-flash",
+    "gemini-2.5-pro": "gemini-3.8-flash", "gemini-2.5-flash": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash": "gemini-3.5-flash-lite", "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+    "gemini-3-pro-preview": "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
+  },
+  xai: {
+    "grok-3": "grok-4.3", "grok-3-mini": "grok-4.3", "grok-4-0709": "grok-4.3", "grok-code-fast-1": "grok-4.3",
+    "grok-4-fast-reasoning": "grok-4.3", "grok-4-fast-non-reasoning": "grok-4.3",
+    "grok-4-1-fast-reasoning": "grok-4.3", "grok-4-1-fast-non-reasoning": "grok-4.3",
+  },
+  deepseek: { "deepseek-chat": "deepseek-flash", "deepseek-reasoner": "deepseek-flash", "deepseek-v4-flash": "deepseek-flash" },
+  qwen: { "qwen-max": "qwen4-max", "qwen-turbo": "qwen3.8-flash" },
+  kimi: { "kimi-k2": "kimi-k3.1-pro", "kimi-k2.5": "kimi-k3.1-pro", "kimi-k2-turbo-preview": "kimi-k3.1-pro", "kimi-k2-thinking": "kimi-k3.1-pro" },
+};
+
+/** The current model to use instead of a retired one, or null when the model is not known to be retired. */
+export function replacementForRetiredModel(provider: AiProviderId, model: string): string | null {
+  const table = RETIRED_MODELS[provider];
+  if (!table) return null;
+  const id = model.trim().replace(/^models\//, "");
+  const base = id.replace(/-(?:20\d{2}-\d{2}-\d{2}|20\d{6})$/, "").replace(/@\d{8}$/, "");
+  return table[id] ?? table[base] ?? null;
+}
 
 export interface AiAnnotationCandidate {
   pageNumber: number;
@@ -101,11 +153,12 @@ export function normalizeAiSettings(value: Partial<AiConnectionSettings> | null 
     value?.protocol === "openai-compatible"
       ? value.protocol
       : preset.protocol;
+  const model = (value?.model ?? preset.defaultModel).trim();
   return {
     provider,
     protocol,
     baseUrl: (value?.baseUrl ?? preset.baseUrl).trim().replace(/\/+$/, ""),
-    model: (value?.model ?? preset.defaultModel).trim(),
+    model: replacementForRetiredModel(provider, model) ?? model,
     apiKey: value?.apiKey ?? "",
   };
 }
@@ -158,11 +211,11 @@ export async function listAiModels(settings: AiConnectionSettings): Promise<stri
       if (cursor && (seen.has(cursor) || seen.size >= 20)) throw new AiProviderError("The provider model list could not be fully refreshed. Enter a model ID directly.");
       if (cursor) seen.add(cursor);
     } while (cursor);
-    return recentAnnotationModels(config.provider, records);
+    return recentAnnotationModels(config.provider, withoutRetired(config.provider, records));
   }
   const headers: Record<string, string> =
     config.protocol === "anthropic-messages"
-      ? { "x-api-key": config.apiKey.trim(), "anthropic-version": "2023-06-01" }
+      ? { "x-api-key": config.apiKey.trim(), "anthropic-version": ANTHROPIC_VERSION }
       : { Authorization: `Bearer ${config.apiKey.trim()}` };
   let cursor = "";
   const seen = new Set<string>();
@@ -179,7 +232,12 @@ export async function listAiModels(settings: AiConnectionSettings): Promise<stri
     if (cursor && (typeof cursor !== "string" || seen.has(cursor) || seen.size >= 20)) throw new AiProviderError("The provider model list could not be fully refreshed. Enter a model ID directly.");
     if (cursor) seen.add(cursor);
   } while (cursor);
-  return recentAnnotationModels(config.provider, records);
+  return recentAnnotationModels(config.provider, withoutRetired(config.provider, records));
+}
+
+/** Providers keep listing some shut-down models for a while; never offer them. */
+function withoutRetired(provider: AiProviderId, records: ModelListing[]): ModelListing[] {
+  return records.filter((record) => !replacementForRetiredModel(provider, String(record?.id ?? record?.name ?? "")));
 }
 
 function buildPrompt(
@@ -210,6 +268,9 @@ async function callOpenAiCompatible(settings: AiConnectionSettings, prompt: stri
     }
   );
   const text = response?.choices?.[0]?.message?.content;
+  if (response?.choices?.[0]?.finish_reason === "length") {
+    throw new AiProviderError("The provider stopped before finishing its answer. Try fewer pages per job.");
+  }
   if (typeof text !== "string" || !text.trim()) {
     throw new AiProviderError("The provider returned no annotation text.");
   }
@@ -222,15 +283,23 @@ async function callAnthropic(settings: AiConnectionSettings, prompt: string): Pr
     url,
     {
       "x-api-key": settings.apiKey.trim(),
-      "anthropic-version": "2023-06-01",
+      "anthropic-version": ANTHROPIC_VERSION,
     },
     {
       model: settings.model,
-      max_tokens: 4096,
+      // Current Claude models think before answering, and that thinking
+      // counts toward this limit, so leave room for both.
+      max_tokens: 16000,
       system: "You create grounded PDF annotations. Respond with valid JSON only.",
       messages: [{ role: "user", content: prompt }],
     }
   );
+  if (response?.stop_reason === "refusal") {
+    throw new AiProviderError("Claude declined to annotate these pages. Try a different prompt or pages.");
+  }
+  if (response?.stop_reason === "max_tokens") {
+    throw new AiProviderError("Claude stopped before finishing its answer. Try fewer pages per job.");
+  }
   const text = Array.isArray(response?.content)
     ? response.content.filter((part: any) => part?.type === "text").map((part: any) => part.text).join("")
     : "";
