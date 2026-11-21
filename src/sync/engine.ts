@@ -163,6 +163,15 @@ export class DocSyncEngine {
     });
   }
 
+  /** Annotation counts in the pre-sync backup and right now, so the UI can warn before a restore clears everything. */
+  async preSyncBackupCounts(): Promise<{ backup: number; current: number } | null> {
+    const path = await this.findPreSyncBackup();
+    if (!path) return null;
+    const snapshot = JSON.parse(await this.o.adapter.read(path)) as LocalSnapshot;
+    const backup = Array.isArray(snapshot.highlights) ? snapshot.highlights.length : 0;
+    return { backup, current: this.o.workspace.syncSnapshot().highlights.length };
+  }
+
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.queue.catch(() => {}).then(fn);
     this.queue = run;

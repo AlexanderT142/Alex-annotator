@@ -10,6 +10,7 @@
  */
 import {
   FuzzySuggestModal,
+  Modal,
   Plugin,
   TFile,
   WorkspaceLeaf,
@@ -405,6 +406,9 @@ export default class LocalPdfAnnotatorPlugin extends Plugin {
       callback: async () => {
         const hash = await this.currentSyncHash();
         if (!hash || !this.sync) return;
+        // Second device: the backup is empty, so restoring would clear this PDF.
+        const counts = await this.sync.preSyncBackupCounts(hash).catch(() => null);
+        if (counts && counts.backup === 0 && counts.current > 0 && !(await confirmClearRestore(this, counts.current))) return;
         let restored: boolean | null;
         try {
           restored = await this.sync.restorePreSync(hash);
@@ -838,7 +842,7 @@ class LpaSettingTab extends PluginSettingTab {
       .setName("Keep the sync folder out of search")
       .setDesc(
         "While sync is on, the sync folder is hidden from the file list. This button also adds it to " +
-          "Settings → Files and links → Excluded files, which keeps it out of search, the graph and the quick switcher. " +
+          "Settings → Files and links → Excluded files, which keeps it out of search and the graph and ranks it lower in the quick switcher. " +
           "That setting does not stop syncing. Do not add the folder to Obsidian Sync's own excluded folders, which would."
       )
       .addButton((button) =>
@@ -854,6 +858,30 @@ class LpaSettingTab extends PluginSettingTab {
         })
       );
   }
+}
+
+/** Ask before a pre-sync restore that would remove every annotation on this PDF. */
+function confirmClearRestore(plugin: Plugin, count: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const modal = new Modal(plugin.app);
+    let answer = false;
+    modal.titleEl.setText("Clear all annotations on this PDF?");
+    modal.contentEl.createEl("p", {
+      text:
+        `This PDF had no annotations before sync was turned on, so restoring will remove all ${count} annotation${count === 1 ? "" : "s"} on this computer. ` +
+        "If you then resume sync, or restart Obsidian with sync still on, those deletions will also reach your other devices.",
+    });
+    new Setting(modal.contentEl)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => modal.close()))
+      .addButton((b) =>
+        b.setButtonText("Clear and restore").setWarning().onClick(() => {
+          answer = true;
+          modal.close();
+        })
+      );
+    modal.onClose = () => resolve(answer);
+    modal.open();
+  });
 }
 
 class AiModelModal extends FuzzySuggestModal<string> {

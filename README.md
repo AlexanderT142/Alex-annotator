@@ -186,8 +186,8 @@ off, the plugin behaves exactly as before. Sync works between desktop
 computers; the plugin does not yet run on phones or tablets.
 
 While sync is on, its folder is hidden from the file list. The **Exclude sync
-folder** button in settings also keeps it out of search, the graph and the
-quick switcher. Do not add the folder to Obsidian Sync's own excluded
+folder** button in settings also keeps it out of search and the graph, and
+ranks it lower in the quick switcher. Do not add the folder to Obsidian Sync's own excluded
 folders; that would stop it from syncing.
 
 ---

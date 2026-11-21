@@ -214,6 +214,10 @@ export class SyncController implements WorkspaceSyncHook {
     return restored;
   }
 
+  async preSyncBackupCounts(hash: string): Promise<{ backup: number; current: number } | null> {
+    return this.docs.get(hash)?.engine.preSyncBackupCounts() ?? null;
+  }
+
   async restorePreSync(hash: string): Promise<boolean | null> {
     const entry = this.docs.get(hash);
     if (!entry) return null;

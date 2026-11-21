@@ -461,17 +461,24 @@ async function pair(extra = NO_GUARD): Promise<[Device, Device]> {
   await old.release();
   const a = await makeDevice("a", NO_GUARD, fs);
   const b = await makeDevice("b", NO_GUARD);
+  const c = await makeDevice("c", NO_GUARD);
+  await c.engine.sync(); // second device that starts empty
   await a.engine.sync();
   const backupPath = `${LOCAL_ROOT}/dev_a/${HASH}/pre-sync-backup.json`;
   const backup = JSON.parse(fs.text.get(backupPath)!);
   assert.equal(backup.sets.length, 2, "all sets, archived included");
   assert.ok(backup.highlights.some((h: any) => h.id === "in-archived"));
   b.ws.add(mark("from-b"));
-  await settle([a, b]);
+  await settle([a, b, c]);
   a.clock.now += 100;
   a.ws.update("mine", { note: "changed later" });
   await settle([a, b]);
   assert.equal(fs.text.get(backupPath), JSON.stringify(backup), "backup is never rewritten");
+  // Second device started empty: the counts let the command warn before clearing it.
+  const cCounts = await c.engine.preSyncBackupCounts();
+  assert.equal(cCounts?.backup, 0);
+  assert.ok((cCounts?.current ?? 0) > 0);
+  assert.equal((await a.engine.preSyncBackupCounts())?.backup, 2);
   assert.ok(await a.engine.restorePreSyncBackup());
   assert.equal(noteOf(a, "mine"), "before sync");
   assert.ok(!has(a, "from-b"), "back to exactly the pre-sync state");
