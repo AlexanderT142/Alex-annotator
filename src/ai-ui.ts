@@ -24,7 +24,7 @@ export class AiAnnotationModal extends AnchoredPanel {
   private prompt = "Explain important ideas and useful connections as a thoughtful reading partner.";
   private starting = false;
   private unsubscribe?: () => void;
-  private refreshTimer?: ReturnType<typeof setTimeout>;
+  private refreshTimer?: number;
   private jobsEl?: HTMLElement;
   private jobRows = new Map<string, { row: Setting; phase: string }>();
   /** Show provider, key and model fields even when a key is already saved. */
@@ -44,8 +44,8 @@ export class AiAnnotationModal extends AnchoredPanel {
     this.render();
     this.unsubscribe = this.options.jobService.subscribe((job) => {
       if (job.jobsRootPath !== this.options.jobsRootPath) return;
-      if (this.refreshTimer) clearTimeout(this.refreshTimer);
-      this.refreshTimer = setTimeout(() => {
+      if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = window.setTimeout(() => {
         if (this.jobsEl && this.contentEl.isConnected) void this.renderJobs(this.jobsEl);
       }, 150);
     });
@@ -53,7 +53,7 @@ export class AiAnnotationModal extends AnchoredPanel {
 
   onClose(): void {
     this.unsubscribe?.();
-    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
   }
 
   private render(): void {

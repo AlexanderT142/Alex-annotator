@@ -101,7 +101,7 @@ export class SyncController implements WorkspaceSyncHook {
   private events: EventRef[] = [];
   private identity: DeviceIdentity;
   private stopped = false;
-  private styleEl: HTMLStyleElement | null = null;
+  private hideSheet: CSSStyleSheet | null = null;
 
   constructor(private app: App, private syncRoot: string) {
     this.identity = new LocalStorageIdentity(app);
@@ -115,11 +115,12 @@ export class SyncController implements WorkspaceSyncHook {
     for (const name of ["create", "modify", "delete"]) this.events.push(vault.on(name, (f: TAbstractFile) => onFile(f)));
     this.events.push(vault.on("rename", (f: TAbstractFile, old: string) => onFile(f, old)));
     try {
-      const el = document.createElement("style");
-      el.id = "lpa-sync-folder-hidden";
-      el.textContent = hideFolderCss(this.syncRoot);
-      document.head.appendChild(el);
-      this.styleEl = el;
+      // A constructed stylesheet, not a <style> element: the folder name is a
+      // setting, so this one rule cannot live in styles.css.
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(hideFolderCss(this.syncRoot));
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      this.hideSheet = sheet;
     } catch (error) {
       console.warn("[PDF Annotator] could not hide the sync folder", error);
     }
@@ -127,8 +128,11 @@ export class SyncController implements WorkspaceSyncHook {
 
   stop(): void {
     this.stopped = true;
-    this.styleEl?.remove();
-    this.styleEl = null;
+    if (this.hideSheet) {
+      const sheet = this.hideSheet;
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((candidate) => candidate !== sheet);
+      this.hideSheet = null;
+    }
     for (const ref of this.events) this.app.vault.offref(ref);
     this.events = [];
     for (const entry of this.docs.values()) this.dispose(entry);

@@ -183,11 +183,13 @@ class PickerMenu {
     const below = view.clientHeight - box.bottom - 8;
     const above = box.top - 8;
     const openUp = below < 220 && above > below;
-    this.el.style.width = `${width}px`;
-    this.el.style.left = `${left}px`;
-    this.el.style.maxHeight = `${Math.max(140, Math.min(360, openUp ? above : below))}px`;
-    if (openUp) { this.el.style.top = ""; this.el.style.bottom = `${view.clientHeight - box.top + 4}px`; }
-    else { this.el.style.bottom = ""; this.el.style.top = `${box.bottom + 4}px`; }
+    this.el.setCssStyles({
+      width: `${width}px`,
+      left: `${left}px`,
+      maxHeight: `${Math.max(140, Math.min(360, openUp ? above : below))}px`,
+      top: openUp ? "" : `${box.bottom + 4}px`,
+      bottom: openUp ? `${view.clientHeight - box.top + 4}px` : "",
+    });
   }
 
   close(): void {

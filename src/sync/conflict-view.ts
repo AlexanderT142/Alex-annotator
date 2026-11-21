@@ -54,7 +54,7 @@ export function conflictLocalTime(when: string): string {
   if (!m) return when;
   const date = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
   // Obsidian's moment follows the app language; fall back to the system locale.
-  const moment = (globalThis as any).moment;
+  const moment = typeof window === "undefined" ? undefined : (window as any).moment;
   if (typeof moment === "function") return moment(date).format("MMM D, HH:mm");
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }

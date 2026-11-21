@@ -67,7 +67,7 @@ export class AnchoredPanel {
     const position = () => {
       if (!anchor.isConnected) { this.close(false); return; }
       const placement = panelPlacement(anchor.getBoundingClientRect(), { width: win.innerWidth, height: win.innerHeight }, this.width);
-      Object.assign(this.modalEl.style, {
+      this.modalEl.setCssStyles({
         width: `${placement.width}px`, left: `${placement.left}px`,
         top: placement.top === undefined ? "auto" : `${placement.top}px`,
         bottom: placement.bottom === undefined ? "auto" : `${placement.bottom}px`,

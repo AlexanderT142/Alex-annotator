@@ -66,6 +66,40 @@ function sanitizePdfJsApi(contents, sourcePath) {
     );
   }
 
+  // Font rules go into a constructed stylesheet instead of an appended <style>
+  // element (Obsidian's scanner disallows style elements; styles.css cannot
+  // hold per-document font rules). Electron always supports this API.
+  contents = replaceRequired(
+    contents,
+    `    if (!this.styleElement) {
+      this.styleElement = this._document.createElement("style");
+      this._document.documentElement.getElementsByTagName("head")[0].append(this.styleElement);
+    }
+    const styleSheet = this.styleElement.sheet;`,
+    `    if (!this.styleElement) {
+      const sheet = new this._document.defaultView.CSSStyleSheet();
+      this._document.adoptedStyleSheets = [...this._document.adoptedStyleSheets, sheet];
+      this.styleElement = { sheet };
+    }
+    const styleSheet = this.styleElement.sheet;`,
+    "font loader style element",
+    sourcePath
+  );
+  contents = replaceRequired(
+    contents,
+    `    if (this.styleElement) {
+      this.styleElement.remove();
+      this.styleElement = null;
+    }`,
+    `    if (this.styleElement) {
+      const sheet = this.styleElement.sheet;
+      this._document.adoptedStyleSheets = this._document.adoptedStyleSheets.filter(candidate => candidate !== sheet);
+      this.styleElement = null;
+    }`,
+    "font loader style cleanup",
+    sourcePath
+  );
+
   contents = contents.replaceAll(`Function("return this")()`, "globalThis");
   contents = contents.replaceAll(`Function('return this')()`, "globalThis");
 
