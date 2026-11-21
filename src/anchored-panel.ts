@@ -81,7 +81,7 @@ export class AnchoredPanel {
       const target = event.target as Element | null;
       if (!target || this.modalEl.contains(target) || anchor.contains(target)) return;
       // Preserve the parent while a provider model chooser or a row menu is open.
-      if (target.closest?.(".modal-container, .suggestion-container, .menu")) return;
+      if (target.closest?.(".modal-container, .suggestion-container, .menu, .lpa-picker-menu")) return;
       this.close(false);
     };
     const escape = (event: KeyboardEvent) => {

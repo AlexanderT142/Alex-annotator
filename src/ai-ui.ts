@@ -1,9 +1,10 @@
-import { App, FuzzySuggestModal, Modal, Notice, Setting } from "obsidian";
+import { App, Notice, Setting } from "obsidian";
 import { AnnotationSetWorkspace } from "./annotation-sets";
 import { AiJobService, type AiAnnotationJobState, type AiJobContext } from "./ai-jobs";
-import { AI_PROVIDER_PRESETS, listAiModels, safeProviderError, type AiProviderId, type AiConnectionSettings, type ConfigureAiConnection } from "./ai-provider";
+import { AI_PROVIDER_PRESETS, listAiModels, modelDisplayName, modelVendor, safeProviderError, type AiProviderId, type AiConnectionSettings, type ConfigureAiConnection } from "./ai-provider";
 import { connectionIdentity } from "./ai-credentials";
 import { AnchoredPanel } from "./anchored-panel";
+import { modelPicker, providerPicker, renderLogo } from "./ai-picker";
 
 export interface AiAnnotationModalOptions {
   anchor?: HTMLElement;
@@ -28,6 +29,8 @@ export class AiAnnotationModal extends AnchoredPanel {
   private jobRows = new Map<string, { row: Setting; phase: string }>();
   /** Show provider, key and model fields even when a key is already saved. */
   private connectionOpen = false;
+  /** Update the connection summary without rebuilding the form (keeps focus while typing). */
+  private refreshStatus?: () => void;
 
   constructor(app: App, private options: AiAnnotationModalOptions) {
     super(app, options.anchor, 560);
@@ -106,17 +109,13 @@ export class AiAnnotationModal extends AnchoredPanel {
 
     if (open && configure) {
       const fields = container.createDiv({ cls: "lpa-ai-connection-fields" });
-      const providerSelect = field(fields, "Provider").createEl("select", { cls: "dropdown" });
-      for (const option of AI_PROVIDER_PRESETS) providerSelect.createEl("option", { value: option.id, text: option.name });
-      providerSelect.value = connection.provider;
-      providerSelect.onchange = async () => {
-        providerSelect.disabled = true;
+      providerPicker(field(fields, "Provider"), connection.provider, async (provider: AiProviderId) => {
         try {
           this.connectionOpen = true;
-          await configure({ provider: providerSelect.value as AiProviderId });
+          await configure({ provider });
           this.render();
-        } catch { new Notice("Could not save the provider selection."); providerSelect.disabled = false; }
-      };
+        } catch { new Notice("Could not save the provider selection."); }
+      });
       if (connection.provider === "custom") {
         let endpoint = connection.baseUrl;
         const row = field(fields, "Custom endpoint").createDiv({ cls: "lpa-ai-inline" });
@@ -144,46 +143,43 @@ export class AiAnnotationModal extends AnchoredPanel {
           keyHint.setText(key.value.trim() ? "Key saved on this device, outside your vault (not encrypted)." : "No key saved. Paste this provider’s key.");
         } catch { new Notice("Could not save the API key."); }
       };
-      const modelRow = field(fields, "Model").createDiv({ cls: "lpa-ai-inline" });
-      const model = modelRow.createEl("input", { attr: { type: "text", placeholder: "Model ID", "aria-label": "Model" } });
-      model.value = connection.model;
-      model.oninput = async () => {
-        try {
-          if (connectionIdentity(this.options.getConnection()) !== connectionIdentity(connection)) return;
-          await configure({ model: model.value });
-        } catch { new Notice("Could not save the model."); }
-      };
-      const choose = modelRow.createEl("button", { text: "Choose model", attr: { type: "button" } });
-      choose.onclick = async () => {
-        const snapshot = { ...this.options.getConnection() };
-        if (!snapshot.apiKey.trim()) { new Notice("Paste an API key above first."); return; }
-        choose.disabled = true;
-        choose.setText("Loading…");
-        try {
-          const models = await listAiModels(snapshot);
-          const stillCurrent = () => {
-            const current = this.options.getConnection();
-            return this.contentEl.isConnected && connectionIdentity(current) === connectionIdentity(snapshot) && current.apiKey === snapshot.apiKey;
-          };
-          if (!stillCurrent()) return;
-          if (!models.length) { new Notice("No models returned. You can enter a model ID instead."); return; }
-          new AnnotationModelPicker(this.app, models, async (picked) => {
-            if (!stillCurrent()) return;
-            await configure({ model: picked });
-            this.render();
-          }).open();
-        } catch (error) { new Notice(`Could not load models: ${safeProviderError(error, snapshot.apiKey).message}`); }
-        finally { choose.disabled = false; choose.setText("Choose model"); }
-      };
+      modelPicker(field(fields, "Model"), {
+        provider: connection.provider,
+        value: connection.model,
+        onChange: async (model) => {
+          try {
+            if (connectionIdentity(this.options.getConnection()) !== connectionIdentity(connection)) return;
+            await configure({ model });
+            this.refreshStatus?.();
+          } catch { new Notice("Could not save the model."); }
+        },
+        loadProviderModels: async () => {
+          const snapshot = { ...this.options.getConnection() };
+          if (!snapshot.apiKey.trim()) throw new Error("Paste an API key above first.");
+          try { return await listAiModels(snapshot); }
+          catch (error) { throw new Error(`Could not load models: ${safeProviderError(error, snapshot.apiKey).message}`); }
+        },
+      });
     }
 
     const bar = container.createDiv({ cls: "lpa-ai-action-bar" });
     const status = bar.createDiv({ cls: "lpa-ai-connection-status" });
-    if (ready) {
-      status.createSpan({ cls: "lpa-ai-connection-name", text: `${preset?.name ?? connection.provider} · ${connection.model}` });
-    } else {
-      status.createSpan({ cls: "lpa-ai-connection-missing", text: connection.apiKey.trim() ? "Choose a model to start" : "Add an API key to start" });
-    }
+    const statusText = status.createSpan();
+    this.refreshStatus = () => {
+      const current = this.options.getConnection();
+      const currentReady = !!current.apiKey.trim() && !!current.model.trim();
+      statusText.empty();
+      if (currentReady) {
+        statusText.className = "lpa-ai-connection-name";
+        renderLogo(statusText, modelVendor(current.model, current.provider));
+        statusText.createSpan({ text: `${preset?.name ?? current.provider} · ${modelDisplayName(current.model) ?? current.model}` });
+        statusText.title = current.model;
+      } else {
+        statusText.className = "lpa-ai-connection-missing";
+        statusText.setText(current.apiKey.trim() ? "Choose a model to start" : "Add an API key to start");
+      }
+    };
+    this.refreshStatus();
     if (configure && ready) {
       const toggle = status.createEl("button", { cls: "lpa-ai-change", text: open ? "Done" : "Change", attr: { type: "button" } });
       toggle.onclick = () => { this.connectionOpen = !open; this.render(); };
@@ -302,18 +298,6 @@ export class AiAnnotationModal extends AnchoredPanel {
         catch (error: any) { new Notice(error?.message ?? "Could not cancel the job."); }
       })
     );
-  }
-}
-
-class AnnotationModelPicker extends FuzzySuggestModal<string> {
-  constructor(app: App, private models: string[], private choose: (model: string) => Promise<void>) {
-    super(app);
-    this.setPlaceholder("Choose from up to four recent models");
-  }
-  getItems(): string[] { return this.models; }
-  getItemText(model: string): string { return model; }
-  onChooseItem(model: string): void {
-    void this.choose(model).catch(() => new Notice("Could not save the selected model."));
   }
 }
 

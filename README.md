@@ -155,8 +155,10 @@ change where your manual notes are saved. Page numbers are positions in the PDF,
 including any cover or introduction. Start with two pages to see whether the
 result suits you. AI explanations can be wrong, so treat them as suggestions.
 
-The model picker stays short: up to four recent text models from your provider.
-You can refresh the choices or enter a model ID yourself when a new one appears.
+Pick the provider and model from lists that show each provider's logo. The
+model list offers that provider's current models (for example Claude Fable 5.2,
+Opus 5.5, Sonnet 5.5 and Haiku 5.5); **Load more from provider** adds its newest
+models, and you can always type any model ID yourself.
 There is no request format or code to configure.
 
 AI is optional and uses your own provider account, which may charge for requests.
@@ -478,8 +480,9 @@ cancelling keeps annotations from completed batches.
 
 Provider settings include OpenAI, Anthropic, Gemini, xAI, DeepSeek, GLM, Qwen,
 Kimi, and custom OpenAI-compatible endpoints. Known key formats are detected
-automatically. The **Choose model** action asks the selected provider
-for its live model list and shows at most four distinct recent text models.
+automatically. The model list shows suggested current models for each provider;
+**Load more from provider** asks the provider for its live model list and adds
+at most four distinct recent text models.
 Dated snapshots and aliases share a slot; reasoning effort does not create a
 separate model. Media and other specialized models are omitted from this picker.
 Recency uses provider timestamps, Claude's documented newest-first order, or
@@ -536,3 +539,10 @@ release must include:
 - `styles.css`
 
 The release tag must match the `version` field in `manifest.json`.
+
+## Credits
+
+Provider logos in the model picker come from
+[LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT License,
+Copyright (c) 2023 LobeHub). The logos are trademarks of their owners and are
+used only to identify each provider.

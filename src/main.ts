@@ -36,7 +36,6 @@ import {
   type PdfBundleBinding,
 } from "./bundles";
 import {
-  AI_PROVIDER_PRESETS,
   DEFAULT_AI_SETTINGS,
   detectProviderFromKey,
   listAiModels,
@@ -47,6 +46,7 @@ import {
   type AiProviderId,
 } from "./ai-provider";
 import { AiJobService } from "./ai-jobs";
+import { modelPicker, providerPicker } from "./ai-picker";
 import { AiCredentialStore } from "./ai-credentials";
 import { DEFAULT_SYNC_FOLDER, SyncController, normalizeSyncFolder, type SyncPauseReason } from "./sync/controller";
 import { setWorkspaceSyncHook } from "./sync/hooks";
@@ -685,16 +685,13 @@ class LpaSettingTab extends PluginSettingTab {
         "Connect an AI provider to add AI notes to your PDFs. Keys are stored on this device, outside your vault, and are not encrypted.",
     });
 
-    new Setting(containerEl)
+    const providerSetting = new Setting(containerEl)
       .setName("AI provider")
-      .setDesc("The service that writes AI notes.")
-      .addDropdown((dropdown) => {
-        for (const preset of AI_PROVIDER_PRESETS) dropdown.addOption(preset.id, preset.name);
-        dropdown.setValue(this.plugin.settings.ai.provider).onChange(async (value) => {
-          await this.plugin.selectAiConnection(value as AiProviderId);
-          this.display();
-        });
-      });
+      .setDesc("The service that writes AI notes.");
+    providerPicker(providerSetting.controlEl, this.plugin.settings.ai.provider, async (provider) => {
+      await this.plugin.selectAiConnection(provider);
+      this.display();
+    });
 
     new Setting(containerEl)
       .setName("API key")
@@ -719,32 +716,23 @@ class LpaSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    const modelSetting = new Setting(containerEl)
       .setName("Model")
-      .setDesc("Pick one of the provider's recent models, or type a model ID.")
-      .addText((text) =>
-        text.setPlaceholder("model-id").setValue(this.plugin.settings.ai.model).onChange(async (value) => {
-          this.plugin.settings.ai.model = value.trim();
-          await this.plugin.saveSettings();
-        })
-      )
-      .addButton((button) =>
-        button.setButtonText("Choose model").onClick(async () => {
-          button.setDisabled(true).setButtonText("Loading…");
-          try {
-            const models = await listAiModels(this.plugin.settings.ai);
-            if (!models.length) {
-              new Notice("The provider did not return any selectable models.");
-            } else {
-              new AiModelModal(this.plugin, models, () => this.display()).open();
-            }
-          } catch (error: any) {
-            new Notice(`Could not load models — ${error?.message ?? error}`);
-          } finally {
-            button.setDisabled(false).setButtonText("Choose model");
-          }
-        })
-      );
+      .setDesc("Pick a model from the list, or type any model ID the provider offers.");
+    modelSetting.settingEl.addClass("lpa-setting-model");
+    modelPicker(modelSetting.controlEl, {
+      provider: this.plugin.settings.ai.provider,
+      value: this.plugin.settings.ai.model,
+      onChange: async (model) => {
+        this.plugin.settings.ai.model = model;
+        await this.plugin.saveSettings();
+      },
+      loadProviderModels: async () => {
+        if (!this.plugin.settings.ai.apiKey.trim()) throw new Error("Paste an API key above first.");
+        try { return await listAiModels(this.plugin.settings.ai); }
+        catch (error: any) { throw new Error(`Could not load models: ${error?.message ?? error}`); }
+      },
+    });
 
     if (this.plugin.settings.ai.provider === "custom") {
       new Setting(containerEl)
@@ -896,29 +884,6 @@ function confirmClearRestore(plugin: Plugin, count: number): Promise<boolean> {
     modal.onClose = () => resolve(answer);
     modal.open();
   });
-}
-
-class AiModelModal extends FuzzySuggestModal<string> {
-  constructor(private plugin: LocalPdfAnnotatorPlugin, private models: string[], private changed: () => void) {
-    super(plugin.app);
-    this.setPlaceholder("Choose from up to four recent models");
-  }
-
-  getItems(): string[] {
-    return this.models;
-  }
-
-  getItemText(model: string): string {
-    return model;
-  }
-
-  onChooseItem(model: string): void {
-    this.plugin.settings.ai.model = model;
-    void this.plugin.saveSettings().then(() => {
-      this.changed();
-      new Notice(`PDF Annotator: using ${model}`);
-    });
-  }
 }
 
 class PdfBackupRestoreModal extends FuzzySuggestModal<PdfBundleBinding> {

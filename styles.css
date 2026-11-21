@@ -2094,7 +2094,8 @@ button.lpa-set-write:hover { color: var(--text-normal); background: var(--backgr
   font-size: var(--font-ui-small);
   color: var(--text-muted);
 }
-.lpa-ai-connection-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpa-ai-connection-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpa-ai-connection-name > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .lpa-ai-connection-missing { color: var(--text-warning, var(--color-orange)); }
 button.lpa-ai-change {
   padding: 0 4px;
@@ -2110,3 +2111,117 @@ button.lpa-ai-change:hover { text-decoration: underline; background: transparent
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
+
+/* ---- AI provider and model pickers (logos) ---- */
+.lpa-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--text-normal);
+}
+.lpa-logo svg { width: 16px; height: 16px; }
+.lpa-logo:not([data-vendor]) { color: var(--text-muted); }
+.lpa-logo:not([data-vendor]) svg { width: 15px; height: 15px; }
+.lpa-ai-connection-name .lpa-logo { width: 16px; height: 16px; }
+.lpa-ai-connection-name .lpa-logo svg { width: 14px; height: 14px; }
+
+button.lpa-picker-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  max-width: 100%;
+  padding: 0 8px 0 10px;
+  justify-content: flex-start;
+  font-weight: var(--font-normal);
+}
+.lpa-ai-control > button.lpa-picker-button { flex: 1 1 auto; }
+.lpa-picker-button-label { flex: 1 1 auto; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpa-picker-chevron { display: inline-flex; color: var(--text-faint); }
+.lpa-picker-chevron svg { width: 14px; height: 14px; }
+
+.lpa-model-combo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+.setting-item-control > .lpa-model-combo { max-width: 300px; }
+.lpa-model-combo > .lpa-logo {
+  position: absolute;
+  left: 8px;
+  pointer-events: none;
+}
+.lpa-model-combo > input[type="text"] {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  padding-left: 32px;
+  padding-right: 28px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+.lpa-model-combo > .lpa-model-combo-toggle {
+  position: absolute;
+  right: 2px;
+  height: calc(100% - 4px);
+  padding: 0 6px;
+  color: var(--text-faint);
+}
+
+.lpa-picker-menu {
+  position: fixed;
+  z-index: var(--layer-menu, 65);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--background-primary);
+  border: var(--border-width, 1px) solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 8px);
+  box-shadow: var(--shadow-s);
+  outline: none;
+}
+.lpa-picker-section {
+  padding: 6px 8px 2px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.lpa-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-s, 4px);
+  cursor: var(--cursor, default);
+  color: var(--text-normal);
+}
+.lpa-picker-item.is-active { background: var(--background-modifier-hover); }
+.lpa-picker-item.is-selected .lpa-picker-label { font-weight: var(--font-semibold); }
+.lpa-picker-text { flex: 1 1 auto; min-width: 0; }
+.lpa-picker-label { font-size: var(--font-ui-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lpa-picker-detail {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lpa-picker-check { display: inline-flex; color: var(--text-accent); }
+.lpa-picker-check svg { width: 14px; height: 14px; }
+.lpa-picker-empty { padding: 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.lpa-picker-footer {
+  margin-top: 4px;
+  border-top: var(--border-width, 1px) solid var(--background-modifier-border);
+  border-radius: 0 0 var(--radius-s, 4px) var(--radius-s, 4px);
+  color: var(--text-accent);
+}
+.lpa-picker-footer .lpa-logo { color: var(--text-accent); }
+.lpa-picker-footer.is-loading { color: var(--text-muted); }
+.lpa-picker-footer.is-error { color: var(--text-error); }
+.lpa-picker-footer.is-error .lpa-picker-label { white-space: normal; }

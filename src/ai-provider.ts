@@ -38,13 +38,13 @@ export type ConfigureAiConnection = (patch: Partial<AiConnectionSettings>) => Pr
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   // Defaults checked against each provider's model and deprecation pages, Nov 2026.
-  { id: "openai", name: "OpenAI", protocol: "openai-compatible", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-6-luna" },
+  { id: "openai", name: "OpenAI", protocol: "openai-compatible", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-6.2-sol" },
   { id: "anthropic", name: "Claude (Anthropic)", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-opus-5-5" },
-  { id: "gemini", name: "Gemini", protocol: "gemini-generate-content", baseUrl: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-4-hydrogen" },
+  { id: "gemini", name: "Gemini", protocol: "gemini-generate-content", baseUrl: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-4-neon" },
   { id: "xai", name: "Grok (xAI)", protocol: "openai-compatible", baseUrl: "https://api.x.ai/v1", defaultModel: "grok-4.7" },
   { id: "deepseek", name: "DeepSeek", protocol: "openai-compatible", baseUrl: "https://api.deepseek.com", defaultModel: "deepseek-flash" },
   { id: "glm", name: "GLM (Zhipu)", protocol: "openai-compatible", baseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-5.3" },
-  { id: "qwen", name: "Qwen (DashScope international)", protocol: "openai-compatible", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen3.7-plus" },
+  { id: "qwen", name: "Qwen (DashScope international)", protocol: "openai-compatible", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen4-max" },
   { id: "kimi", name: "Kimi (Moonshot)", protocol: "openai-compatible", baseUrl: "https://api.moonshot.cn/v1", defaultModel: "kimi-k3.1-pro" },
   { id: "custom", name: "Custom OpenAI-compatible", protocol: "openai-compatible", baseUrl: "", defaultModel: "" },
 ];
@@ -53,7 +53,7 @@ export const DEFAULT_AI_SETTINGS: AiConnectionSettings = {
   provider: "openai",
   protocol: "openai-compatible",
   baseUrl: "https://api.openai.com/v1",
-  model: "gpt-6-luna",
+  model: "gpt-6.2-sol",
   apiKey: "",
 };
 
@@ -95,6 +95,93 @@ const RETIRED_MODELS: Partial<Record<AiProviderId, Record<string, string>>> = {
   qwen: { "qwen-max": "qwen4-max", "qwen-turbo": "qwen3.8-flash" },
   kimi: { "kimi-k2": "kimi-k3.1-pro", "kimi-k2.5": "kimi-k3.1-pro", "kimi-k2-turbo-preview": "kimi-k3.1-pro", "kimi-k2-thinking": "kimi-k3.1-pro" },
 };
+
+export interface SuggestedModel {
+  id: string;
+  name: string;
+  /** A few words on when to pick it. */
+  note: string;
+}
+
+/**
+ * Current models offered in the model picker before any request is made,
+ * newest and most capable first. Checked against each provider's model pages,
+ * Nov 2026. Users can still type any model ID or load the provider's own list.
+ */
+export const SUGGESTED_MODELS: Partial<Record<AiProviderId, SuggestedModel[]>> = {
+  openai: [
+    { id: "gpt-6.2-astra", name: "GPT-6.2 Astra", note: "Most capable" },
+    { id: "gpt-6.2-sol", name: "GPT-6.2 Sol", note: "Everyday flagship" },
+    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", note: "Strong, lower cost" },
+    { id: "gpt-6.1-terra", name: "GPT-6.1 Terra", note: "Fast" },
+    { id: "gpt-6-luna", name: "GPT-6 Luna", note: "Cheapest" },
+  ],
+  anthropic: [
+    { id: "claude-fable-5-2", name: "Claude Fable 5.2", note: "Most capable" },
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5", note: "Deep reading" },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", note: "Balanced" },
+    { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", note: "Fast, low cost" },
+  ],
+  gemini: [
+    { id: "gemini-4-carbon", name: "Gemini 4 Carbon", note: "Most capable" },
+    { id: "gemini-4-neon", name: "Gemini 4 Neon", note: "Frontier, paid tier" },
+    { id: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen", note: "Everyday, free tier" },
+    { id: "gemini-4-argon", name: "Gemini 4 Argon", note: "Efficient reasoning" },
+    { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", note: "Fast" },
+    { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash-Lite", note: "Cheapest" },
+  ],
+  xai: [
+    { id: "grok-4.7", name: "Grok 4.7", note: "Most capable" },
+    { id: "grok-4.6", name: "Grok 4.6", note: "Previous flagship" },
+    { id: "grok-4.3", name: "Grok 4.3", note: "Lower cost" },
+  ],
+  deepseek: [
+    { id: "deepseek-flash", name: "DeepSeek V4.1 Flash", note: "Fast, low cost" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", note: "Larger model" },
+  ],
+  glm: [
+    { id: "glm-5.3", name: "GLM-5.3", note: "Flagship" },
+    { id: "glm-5.2", name: "GLM-5.2", note: "Previous flagship" },
+    { id: "glm-5.1", name: "GLM-5.1", note: "Lower cost" },
+  ],
+  qwen: [
+    { id: "qwen4-max", name: "Qwen 4 Max", note: "Most capable" },
+    { id: "qwen3.7-plus", name: "Qwen 3.7 Plus", note: "Balanced" },
+    { id: "qwen3.8-flash", name: "Qwen 3.8 Flash", note: "Fast, low cost" },
+  ],
+  kimi: [
+    { id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", note: "Most capable" },
+    { id: "kimi-k3", name: "Kimi K3", note: "Previous model" },
+  ],
+};
+
+export function suggestedModels(provider: AiProviderId): SuggestedModel[] {
+  return SUGGESTED_MODELS[provider] ?? [];
+}
+
+/** A readable name for a model ID, when it is one of the suggested models. */
+export function modelDisplayName(model: string): string | null {
+  const id = model.trim().replace(/^models\//, "");
+  for (const list of Object.values(SUGGESTED_MODELS)) {
+    const found = list?.find((candidate) => candidate.id === id);
+    if (found) return found.name;
+  }
+  return null;
+}
+
+/** Which provider's logo to show for a model, judged by its ID. A custom
+ * endpoint often serves another vendor's models, so this does not trust the
+ * provider setting alone. */
+export function modelVendor(model: string, provider: AiProviderId): Exclude<AiProviderId, "custom"> | null {
+  const id = model.trim().toLowerCase().replace(/^models\//, "").replace(/^[a-z-]+\//, "");
+  const byPrefix: Array<[RegExp, Exclude<AiProviderId, "custom">]> = [
+    [/^(?:gpt-|o\d|chatgpt-)/, "openai"], [/^claude-/, "anthropic"], [/^gemini-/, "gemini"],
+    [/^grok-/, "xai"], [/^deepseek-/, "deepseek"], [/^glm-/, "glm"], [/^(?:qwen|qwq)/, "qwen"],
+    [/^(?:kimi-|moonshot-)/, "kimi"],
+  ];
+  for (const [pattern, vendor] of byPrefix) if (pattern.test(id)) return vendor;
+  return provider === "custom" ? null : provider;
+}
 
 /** The current model to use instead of a retired one, or null when the model is not known to be retired. */
 export function replacementForRetiredModel(provider: AiProviderId, model: string): string | null {
