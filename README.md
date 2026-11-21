@@ -127,7 +127,7 @@ Click the set name at the top right to open the dropdown:
 - **+ New set** gives you another space for a different purpose. Archived sets
   are listed under **Archived** at the bottom.
 
-![Annotation-set dropdown showing personal notes, translations, and a reading partner with independent visibility](docs/screenshots/annotation-sets-dropdown-retina.png)
+![Annotation sets on a page of Being and Time: My notes, a Chinese translation and a reading partner shown, seminar notes hidden, with note counts and Writing here](docs/screenshots/annotation-sets-dropdown-retina.png)
 
 *Choose what you see independently from where you write.*
 
@@ -146,7 +146,7 @@ idea in a separate set.
 5. Start the job and keep reading. Progress appears on the toolbar, and closing
    the dropdown does not stop the work.
 
-![AI annotation dropdown with an existing destination set, provider, hidden API-key field, model, page range, and reading-partner prompt](docs/screenshots/ai-annotation-dropdown-retina.png)
+![Annotate with AI panel with the Reading partner set, a page range, the prompt, Claude chosen as provider, and the model list showing Claude models with their logos](docs/screenshots/ai-annotation-dropdown-retina.png)
 
 *Tell AI what kind of help you want and where its notes should go.*
 
